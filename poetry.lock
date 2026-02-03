@@ -912,6 +912,18 @@ docs = ["sphinx (!=5.2.0,!=5.2.0.post0,!=7.2.5)", "sphinx_rtd_theme"]
 test = ["pretend", "pytest (>=3.0.1)", "pytest-rerunfailures"]
 
 [[package]]
+name = "pyrate-limiter"
+version = "4.0.2"
+description = "Python Rate-Limiter using Leaky-Bucket Algorithm"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "pyrate_limiter-4.0.2-py3-none-any.whl", hash = "sha256:35ec42b9bb9cfabcafab14d0c5c6523f48378c3da2949e534ce3cbdfea71eadd"},
+    {file = "pyrate_limiter-4.0.2.tar.gz", hash = "sha256:b678841e2215f114ef6f98c7093755ca3b466de83cb5a881231fd6e321fa14b5"},
+]
+
+[[package]]
 name = "pytest"
 version = "8.4.2"
 description = "pytest: simple powerful testing with Python"
@@ -1147,6 +1159,26 @@ botocore = ">=1.37.4,<2.0a.0"
 
 [package.extras]
 crt = ["botocore[crt] (>=1.37.4,<2.0a.0)"]
+
+[[package]]
+name = "sec-edgar-downloader"
+version = "5.1.0"
+description = "Download SEC filings from the EDGAR database using Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "sec_edgar_downloader-5.1.0-py3-none-any.whl", hash = "sha256:2bcd2350b8c30f5bb710accfff55ebcf442e4ab9a7a7c5f2b410ffe265ff3269"},
+    {file = "sec_edgar_downloader-5.1.0.tar.gz", hash = "sha256:cb7b1a152b2bce9da999d0893e3ec4482e1e8bc53c5ffba15edbae0acf547f6c"},
+]
+
+[package.dependencies]
+pyrate-limiter = ">=4.0.0"
+requests = "*"
+
+[package.extras]
+doc = ["doc8", "sphinx", "sphinx-autobuild", "sphinx-autodoc-typehints"]
+test = ["pre-commit", "pytest", "pytest-cov"]
 
 [[package]]
 name = "six"
@@ -1684,4 +1716,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "4eae02fd238f95f88500e9dae8c9d58bb377211a6a062838b8bc1137642121e3"
+content-hash = "5a8767e5be9318121a8b8c6235bea4effb3329134f00ddc0d5c08758daa8dfff"
