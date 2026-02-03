@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+pydantic
+snowflake-connector-python
+redis
+structlog
+pytest
+httpx
+ruff
