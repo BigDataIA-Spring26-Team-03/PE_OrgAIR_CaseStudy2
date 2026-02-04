@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -7,6 +7,8 @@ from hashlib import sha256
 from statistics import mean
 from app.models.signal import CompanySignalSummary
 from typing import Dict, List, Optional, Set
+from jobspy import scrape_jobs
+import pandas as pd
 
 from app.models.signal import ExternalSignal, SignalCategory, SignalSource
 
@@ -124,7 +126,7 @@ def job_postings_to_signals(company_id: str, jobs: List[JobPosting]) -> List[Ext
                 score=score_0_100,
                 title=job.title,
                 url=job.url,
-                metadata_json=str(meta),
+                metadata_json=json.dumps(meta, default=str),
             )
         )
 
@@ -162,3 +164,41 @@ def aggregate_job_signals(
         patents_score=patents_score,
         composite_score=composite_score,
     )
+
+def scrape_job_postings(
+    search_query: str,
+    sources: list[str] = ["linkedin", "indeed", "glassdoor"],
+    location: str = "United States",
+    max_results_per_source: int = 25,
+    hours_old: int = 24 * 30,
+) -> list[JobPosting]:
+    """
+    Scrape job postings using JobSpy and return JobPosting objects.
+    """
+
+    df = scrape_jobs(
+        site_name=sources,
+        search_term=search_query,
+        location=location,
+        results_wanted=max_results_per_source * len(sources),
+        hours_old=hours_old,
+        linkedin_fetch_description=True,
+    )
+
+    jobs: list[JobPosting] = []
+
+    if df is None or df.empty:
+        return jobs
+
+    for _, row in df.iterrows():
+        jobs.append(
+            JobPosting(
+                title=str(row.get("title", "")),
+                company=str(row.get("company", "Unknown")),
+                description=str(row.get("description", "")),
+                url=str(row.get("job_url", "")),
+                posted_date=str(row.get("date_posted", "")),
+            )
+        )
+
+    return jobs
