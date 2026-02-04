@@ -16,6 +16,7 @@ snowflake-connector-python = "^3.7.0"
 redis = "^5.0.0"
 structlog = "^24.1.0"
 sec-edgar-downloader = "^5.1.0"
+python-jobspy = "^1.1.82"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
