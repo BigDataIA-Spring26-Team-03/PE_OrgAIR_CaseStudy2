@@ -3,8 +3,14 @@ from __future__ import annotations
 import argparse
 
 from app.pipelines.external_signals_orchestrator import run_external_signals_pipeline
-from app.pipelines.tech_signals import TechSignalInput
-from app.pipelines.patent_signals import PatentSignalInput
+from app.pipelines.tech_signals import (
+    tech_inputs_to_signals,
+    scrape_tech_signal_inputs_mock,
+)
+from app.pipelines.patent_signals import (
+    patent_inputs_to_signals,
+    scrape_patent_signal_inputs_mock,
+)
 
 
 def main() -> None:
@@ -16,35 +22,17 @@ def main() -> None:
     parser.add_argument("--max-per-source", type=int, default=3)
 
     args = parser.parse_args()
-
     sources = [s.strip() for s in args.sources.split(",") if s.strip()]
 
-    # Demo inputs for tech/patents (replace later with real collected items)
-    tech_items = [
-        TechSignalInput(
-            title="AI Platform Launch",
-            description="LLM agent workflow with RAG using Azure and Kubernetes",
-            company="DemoCo",
-            url="https://example.com/tech1",
-        ),
-        TechSignalInput(
-            title="Open source release",
-            description="Open source GitHub repo for evaluation pipelines",
-            company="DemoCo",
-            url="https://example.com/tech2",
-        ),
-    ]
+    # --- TECH (MOCK) ---
+    tech_items = scrape_tech_signal_inputs_mock(company="TestCo")
+    tech_signals = tech_inputs_to_signals(company_id=args.company_id, items=tech_items)
 
-    patent_items = [
-        PatentSignalInput(
-            title="Neural network model for generative text",
-            abstract="A large language model uses embeddings and transformer layers for NLP tasks",
-            company="DemoCo",
-            url="https://example.com/patent1",
-            published_date="2025-11-10",
-        )
-    ]
+    # --- PATENTS (MOCK) ---
+    patent_items = scrape_patent_signal_inputs_mock(company="TestCo")
+    patent_signals = patent_inputs_to_signals(company_id=args.company_id, items=patent_items)
 
+    # Orchestrator still runs jobs scraping (real via JobSpy) + aggregates everything
     result = run_external_signals_pipeline(
         company_id=args.company_id,
         jobs_search_query=args.query,
@@ -61,6 +49,10 @@ def main() -> None:
     print("tech_signals:", len(result.tech_signals))
     print("patent_signals:", len(result.patent_signals))
     print("SUMMARY:", result.summary)
+
+    # Optional: show mock signals too (debug)
+    print("\n[debug] mock tech_signals:", len(tech_signals))
+    print("[debug] mock patent_signals:", len(patent_signals))
 
 
 if __name__ == "__main__":

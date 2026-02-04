@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -14,8 +13,7 @@ from app.models.signal import CompanySignalSummary, ExternalSignal, SignalCatego
 @dataclass(frozen=True)
 class PatentSignalInput:
     """
-    Represents a single patent-related signal for a company.
-    Examples: patent applications, grants, patent text mentions.
+    Represents a single patent / innovation signal for a company.
     """
     title: str
     abstract: str
@@ -24,53 +22,51 @@ class PatentSignalInput:
     published_date: Optional[str] = None  # keep string for now
 
 
-PATENT_AI_KEYWORDS: Set[str] = {
-    "machine learning",
-    "deep learning",
-    "neural network",
-    "transformer",
+PATENT_KEYWORDS: Set[str] = {
+    "patent",
+    "invention",
+    "novel",
+    "embeddings",
+    "embedding",
     "large language model",
     "llm",
-    "generative",
-    "diffusion",
-    "computer vision",
-    "natural language processing",
+    "transformer",
+    "transformers",
+    "neural network",
+    "deep learning",
     "nlp",
-    "reinforcement learning",
+    "generative",
+    "foundation model",
     "rag",
-    "vector database",
-    "embedding",
 }
 
 
 def _normalize(text: str) -> str:
-    t = (text or "").lower()
-    t = t.replace("-", " ").replace("_", " ")
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
+    return (text or "").lower()
 
 
 def extract_patent_mentions(text: str) -> Set[str]:
     t = _normalize(text)
     found: Set[str] = set()
-    for kw in PATENT_AI_KEYWORDS:
-        if _normalize(kw) in t:
-            found.add(_normalize(kw))
+    for kw in PATENT_KEYWORDS:
+        if kw in t:
+            found.add(kw)
     return found
 
 
 def calculate_patent_innovation_score(mentions: Set[str], title: str) -> float:
     """
-    Score 0..1 innovation intensity based on AI-related patent mentions.
-    Simple and deterministic:
-      - number of unique AI mentions (cap at 5) contributes 0.7
-      - title boost for explicit AI terms contributes 0.3
+    Score 0..1 based on number of patent/AI innovation mentions + a small title boost.
     """
-    base = min(len(mentions) / 5, 1.0) * 0.7
+    if not mentions:
+        return 0.0
+
+    # cap keyword hits so it doesn't explode
+    hit_score = min(len(mentions), 6) / 6.0  # 0..1
+    base = 0.85 * hit_score
 
     title_lower = _normalize(title)
-    title_boost = 0.3 if any(k in title_lower for k in ["ai", "ml", "machine learning", "llm", "neural"]) else 0.0
-
+    title_boost = 0.15 if any(k in title_lower for k in ["patent", "transformer", "llm", "neural", "generative"]) else 0.0
     return min(base + title_boost, 1.0)
 
 
@@ -84,8 +80,7 @@ def patent_inputs_to_signals(company_id: str, items: List[PatentSignalInput]) ->
     now = datetime.utcnow()
 
     for item in items:
-        text = f"{item.title}\n{item.abstract}"
-        mentions = extract_patent_mentions(text)
+        mentions = extract_patent_mentions(item.abstract)
         score_0_1 = calculate_patent_innovation_score(mentions, item.title)
         score_0_100 = int(round(score_0_1 * 100))
 
@@ -105,7 +100,7 @@ def patent_inputs_to_signals(company_id: str, items: List[PatentSignalInput]) ->
                 score=score_0_100,
                 title=item.title,
                 url=item.url,
-                metadata_json=json.dumps(meta),  # valid JSON
+                metadata_json=json.dumps(meta),  # IMPORTANT: valid JSON
             )
         )
 
@@ -113,7 +108,10 @@ def patent_inputs_to_signals(company_id: str, items: List[PatentSignalInput]) ->
 
 
 def aggregate_patent_signals(company_id: str, patent_signals: List[ExternalSignal]) -> CompanySignalSummary:
-    patents_score = int(round(mean(s.score for s in patent_signals))) if patent_signals else 0
+    if not patent_signals:
+        patents_score = 0
+    else:
+        patents_score = int(round(mean(s.score for s in patent_signals)))
 
     # jobs & tech filled by other pipelines later
     jobs_score = 0
@@ -128,3 +126,18 @@ def aggregate_patent_signals(company_id: str, patent_signals: List[ExternalSigna
         patents_score=patents_score,
         composite_score=composite_score,
     )
+
+
+def scrape_patent_signal_inputs_mock(company: str = "TestCo") -> List[PatentSignalInput]:
+    """
+    MOCK ONLY (no real scraping yet). Safe constructor: uses `abstract=` (NOT description).
+    """
+    return [
+        PatentSignalInput(
+            title="Neural network model for generative text",
+            abstract="A large language model uses embeddings and transformer layers for NLP tasks",
+            company=company,
+            url="https://example.com/patent1",
+            published_date="2025-11-10",
+        )
+    ]

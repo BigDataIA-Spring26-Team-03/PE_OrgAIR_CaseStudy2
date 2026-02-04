@@ -210,3 +210,26 @@ def aggregate_tech_signals(company_id: str, tech_signals: List[ExternalSignal]) 
         patents_score=patents_score,
         composite_score=composite_score,
     )
+
+def scrape_tech_signal_inputs_mock(company: str) -> List[TechSignalInput]:
+    """
+    MOCK tech signal "scraper".
+    Returns a few TechSignalInput items as if they were scraped from blogs/GitHub/news.
+    """
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    return [
+        TechSignalInput(
+            title="AI Platform Launch",
+            description="We announced an LLM agent workflow with RAG using Azure OpenAI and Kubernetes.",
+            company=company,
+            url="https://example.com/ai-platform-launch",
+            observed_date=today,
+        ),
+        TechSignalInput(
+            title="Open source release",
+            description="We released an open source repo for evaluation pipelines, using LangChain + vector database patterns.",
+            company=company,
+            url="https://github.com/example/eval-pipelines",
+            observed_date=today,
+        ),
+    ]
