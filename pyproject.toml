@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "pe-orgair-casestudy1"
 version = "0.1.0"
-description = "PE OrgAIR – Case Study 1 (FastAPI + Snowflake + Redis + S3)"
+description = "PE OrgAIR – Case Study 2 (FastAPI + Snowflake + Redis + S3)"
 authors = ["BigDataIA Team 03"]
 readme = "README.md"
 packages = [{ include = "app" }]
@@ -16,6 +16,8 @@ snowflake-connector-python = "^3.7.0"
 redis = "^5.0.0"
 structlog = "^24.1.0"
 sec-edgar-downloader = "^5.1.0"
+pymupdf = "^1.26.7"
+pdfplumber = "^0.11.9"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

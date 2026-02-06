@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: Optional[str] = "us-east-1"
-    S3_BUCKET: Optional[str] = Field(default=None, validation_alias=AliasChoices("S3_BUCKET", "S3_BUCKET_NAME"))
+    S3_BUCKET_NAME: Optional[str] = Field(default=None, validation_alias=AliasChoices("S3_BUCKET", "S3_BUCKET_NAME"))
 
 
     SEC_EDGAR_USER_AGENT_EMAIL: str

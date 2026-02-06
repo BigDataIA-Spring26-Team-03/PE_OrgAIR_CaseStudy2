@@ -22,7 +22,7 @@ from app.pipelines.leadership_signals import scrape_leadership_profiles_mock, le
 from app.pipelines.external_signals_orchestrator import build_company_signal_summary
 
 logger = structlog.get_logger()
-router = APIRouter(prefix="/api/v1/signals", tags=["signals"])
+router = APIRouter(prefix="/api/signals", tags=["signals"])
 
 
 # ============================================================================
@@ -814,3 +814,5 @@ async def run_batch_collection_task(years: int):
                 
     except Exception as e:
         logger.error("Batch collection failed", error=str(e))
+
+        

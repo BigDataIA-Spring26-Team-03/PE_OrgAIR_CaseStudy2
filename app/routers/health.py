@@ -33,7 +33,7 @@ async def health_check():
         dependencies["redis"] = "unhealthy"
 
     # S3 (placeholder: not configured unless bucket + keys exist)
-    if settings.S3_BUCKET and settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+    if settings.S3_BUCKET_NAME and settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
         dependencies["s3"] = "configured"
     else:
         dependencies["s3"] = "not_configured"
