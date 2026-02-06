@@ -220,9 +220,9 @@ See `requirements.txt` for full dependencies. Key packages:
 
 ## 👥 Team Contributions
 
-- **Vaishnavi Srinivas** – SEC EDGAR pipeline, document processing
-- **Ishaan Samel** – External signals orchestration, scoring model
-- **Ayush Fulsundar** – Snowflake integration, data quality validation
+- **Vaishnavi Srinivas** – External signals orchestration
+- **Ishaan Samel** – Snowflake integration, data quality validation
+- **Ayush Fulsundar** – scoring modelSEC EDGAR pipeline, document processing
 
 ---
 
