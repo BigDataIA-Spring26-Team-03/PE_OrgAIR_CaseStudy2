@@ -6,12 +6,19 @@ Supports CS1 (Platform Foundation) + CS2 (Evidence Collection)
 
 import requests
 from typing import Optional, Dict, List
+import os
+import streamlit as st
 
 class APIClient:
     """Client for communicating with FastAPI backend"""
     
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url
+    def __init__(self, base_url: str | None = None):
+        self.base_url = (
+            base_url
+            or st.secrets.get("API_BASE_URL", None)
+            or os.getenv("API_BASE_URL", None)
+            or "http://localhost:8000"
+        ).rstrip("/")
     
     def _handle_response(self, response):
         """Handle API response and errors"""

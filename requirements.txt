@@ -10,4 +10,10 @@ httpx
 ruff
 streamlit
 plotly
+sec-edgar-downloader
+beautifulsoup4
+lxml
+requests
+
+
 
