@@ -14,6 +14,7 @@ sec-edgar-downloader
 beautifulsoup4
 lxml
 requests
+PyMuPDF
 
 
 
