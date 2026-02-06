@@ -8,3 +8,6 @@ structlog
 pytest
 httpx
 ruff
+streamlit
+plotly
+
