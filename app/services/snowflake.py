@@ -503,6 +503,46 @@ class SnowflakeService:
         rows = self.execute_update(query, {"assessment_id": assessment_id, "dimension": dimension})
         return rows > 0
 
+    
+# ========================================
+    # CASE STUDY 2: DOCUMENTS PIPELINE HELPERS
+    # ========================================
+
+    def list_documents_by_status(self, status: str, limit: int = 200) -> List[Dict]:
+        query = """
+            SELECT id, ticker, filing_type, s3_key, status
+            FROM documents
+            WHERE status = %(status)s
+            ORDER BY created_at ASC
+            LIMIT %(limit)s
+        """
+        return self.execute_query(query, {"status": status, "limit": limit})
+
+    def mark_document_cleaned(self, document_id: str) -> None:
+        self.execute_update(
+            """
+            UPDATE documents
+            SET status = 'cleaned',
+                processed_at = CURRENT_TIMESTAMP(),
+                error_message = NULL
+            WHERE id = %(id)s
+            """,
+            {"id": document_id},
+        )
+
+    def mark_document_error(self, document_id: str, message: str) -> None:
+        # keep message size safe-ish
+        msg = (message or "")[:2000]
+        self.execute_update(
+            """
+            UPDATE documents
+            SET status = 'error',
+                error_message = %(msg)s,
+                processed_at = CURRENT_TIMESTAMP()
+            WHERE id = %(id)s
+            """,
+            {"id": document_id, "msg": msg},
+        )
 
 # Global instance
 db = SnowflakeService()
