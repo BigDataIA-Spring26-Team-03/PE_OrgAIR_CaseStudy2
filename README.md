@@ -54,33 +54,99 @@ Snowflake (Documents, Chunks, Signals, Summaries)
 ```
 PE_OrgAIR_CaseStudy2/
 ├── app/
-│   ├── pipelines/
-│   │   ├── sec_edgar.py
-│   │   ├── document_parser.py
-│   │   ├── job_signals.py
-│   │   ├── tech_signals.py
-│   │   ├── patent_signals.py
-│   │   ├── leadership_signals.py
-│   │   └── external_signals_orchestrator.py
+│   ├── core/
+│   │   └── deps.py                     # Dependency injection
+│   │
+│   ├── database/
+│   │   ├── schema.sql                  # Core schema
+│   │   └── schema_case_study_2.sql     # CS2-specific tables
+│   │
 │   ├── models/
-│   │   ├── document.py
-│   │   ├── signal.py
-│   │   └── evidence.py
-│   └── services/
-│       └── snowflake.py
+│   │   ├── assessment.py               # Assessment data models
+│   │   ├── company.py                  # Company entities
+│   │   ├── dimension.py                # Scoring dimensions
+│   │   ├── document.py                 # SEC filing models
+│   │   ├── evidence.py                 # Evidence structures
+│   │   ├── industry.py                 # Industry classifications
+│   │   └── signal.py                   # External signals
+│   │
+│   ├── pipelines/
+│   │   ├── sec_edgar.py                # SEC EDGAR data ingestion
+│   │   ├── document_parser_from_s3.py  # Parse docs from S3
+│   │   ├── document_text_cleaner.py    # Text preprocessing
+│   │   ├── document_chunker_s3.py      # Semantic chunking
+│   │   ├── job_signals.py              # Job posting scraper
+│   │   ├── tech_signals.py             # Tech stack detection
+│   │   ├── patent_signals.py           # Patent analysis
+│   │   ├── leadership_signals.py       # Leadership scoring
+│   │   └── external_signals_orchestrator.py  # Signal coordinator
+│   │
+│   ├── routers/
+│   │   ├── companies.py                # Company endpoints
+│   │   ├── assessments.py              # Assessment APIs
+│   │   ├── dimension.py                # Dimension management
+│   │   ├── documents.py                # Document retrieval
+│   │   ├── signals.py                  # Signal endpoints
+│   │   └── health.py                   # Health checks
+│   │
+│   ├── services/
+│   │   ├── snowflake.py                # Snowflake connector
+│   │   ├── s3_storage.py               # S3 operations
+│   │   └── redis_cache.py              # Redis caching layer
+│   │
+│   ├── streamlit_app/
+│   │   └── app.py                      # Dashboard UI
+│   │
+│   ├── config.py                       # Configuration management
+│   └── main.py                         # FastAPI entrypoint
+│
 ├── scripts/
-│   └── run_external_signals.py
+│   ├── run_sec_edgar.py                # Execute SEC pipeline
+│   ├── run_external_signals.py         # Run signal collection
+│   ├── parse_document.py               # Parse individual docs
+│   ├── clean_documents_from_s3.py      # Clean S3 documents
+│   ├── chunk_documents_from_s3.py      # Chunk S3 documents
+│   ├── backfill_companies.py           # Populate company data
+│   └── company_uspto_names.py          # USPTO name mapping
+│
 ├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── samples/
+│   ├── raw/                            # Raw downloaded data
+│   ├── processed/                      # Processed outputs
+│   └── samples/                        # Sample datasets
+│
 ├── docs/
-│   └── evidence_report.md
-├── README.md
-└── requirements.txt
+│   └── evidence_report.md              # Analysis & findings
+│
+├── tests/                              # Unit & integration tests
+├── Dockerfile                          # Container definition
+├── docker-compose.yml                  # Multi-service orchestration
+├── requirements.txt                    # Python dependencies
+├── pyproject.toml                      # Poetry configuration
+└── README.md                           # Project documentation
 ```
 
----
+### Key Components
+
+#### 🔧 **Core Application** (`app/`)
+- **Models**: Pydantic schemas for data validation
+- **Pipelines**: ETL workflows for evidence collection
+- **Routers**: RESTful API endpoints
+- **Services**: External system integrations (Snowflake, S3, Redis)
+
+#### 📜 **Scripts** (`scripts/`)
+Standalone executables for:
+- Data ingestion and processing
+- Pipeline orchestration
+- Database backfilling
+
+#### 🗄️ **Data** (`data/`)
+- **raw/**: Unprocessed source files
+- **processed/**: Cleaned and transformed data
+- **samples/**: Test datasets
+
+#### 🐳 **Infrastructure**
+- **Docker**: Containerized deployment
+- **docker-compose**: Local development stack
 
 ## 📊 Evidence Pipelines Implemented
 
@@ -188,18 +254,16 @@ SELECT * FROM company_signal_summaries;
 
 ## 📄 Evidence Report
 
-The detailed **Evidence Collection Report** is available here:
+View the complete analysis and findings:
 
-- `docs/evidence_report.md`
+[Evidence Collection Report](https://docs.google.com/document/d/1uM8F2Y0ZmF4nhfrEKaGMd3pm_phT4vguyAot3XAxEt4/edit?tab=t.0)
 
-**Includes:**
+The report includes:
 - Company-wise document counts
 - Signal scores by category
 - Composite scores
 - Observed "say vs do" gaps
 - Data quality notes
-
----
 
 ## 🎯 Next Steps
 
@@ -222,9 +286,16 @@ See `requirements.txt` for full dependencies. Key packages:
 
 - **Vaishnavi Srinivas** – External signals orchestration
 - **Ishaan Samel** – Snowflake integration, data quality validation
-- **Ayush Fulsundar** – scoring modelSEC EDGAR pipeline, document processing
+- **Ayush Fulsundar** –  SEC EDGAR ingestion, document parsing, cleaning, and chunking
 
 ---
+## 🎥 Demo Video
+
+Watch our project demonstration:
+
+[![Demo Video](https://img.shields.io/badge/Watch-Demo%20Video-red?style=for-the-badge&logo=google-drive)](https://drive.google.com/drive/folders/1bNFGsU0ojkWythDrCrzsGkeT6hBsrS48)
+
+[📹 View Demo Video on Google Drive](https://drive.google.com/drive/folders/1bNFGsU0ojkWythDrCrzsGkeT6hBsrS48)
 
 ### 📚 Interactive Codelab
 
