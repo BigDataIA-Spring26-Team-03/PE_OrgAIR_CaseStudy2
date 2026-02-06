@@ -15,6 +15,9 @@ beautifulsoup4
 lxml
 requests
 PyMuPDF
+pdfplumber
+pypdfium2
+
 
 
 
