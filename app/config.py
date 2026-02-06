@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     AWS_REGION: Optional[str] = "us-east-1"
     S3_BUCKET: Optional[str] = None
     
+    # NEW: USPTO API (for CS2)
+    uspto_api_key: Optional[str] = None
+    
+    # API Settings
+    api_version: str = "1.0.0"
+    
     @model_validator(mode="after")
     def require_snowflake_in_production(self):
         if self.APP_ENV == "production":
@@ -50,9 +56,9 @@ class Settings(BaseSettings):
         return self
     
     model_config = SettingsConfigDict(
-    env_file=".env",
-    case_sensitive=False
-)
+        env_file=".env",
+        case_sensitive=False
+    )
 
 @lru_cache
 def get_settings() -> Settings:

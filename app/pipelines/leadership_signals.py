@@ -218,3 +218,93 @@ def scrape_leadership_profiles_mock(company: str = "TestCo") -> List[LeadershipP
             url="https://example.com/leader4",
         ),
     ]
+
+
+
+def leadership_profiles_to_aggregated_signal(
+    company_id: str,
+    executives: List[LeadershipProfile]
+) -> ExternalSignal:
+    """
+    Create ONE aggregated leadership signal from all executives.
+    
+    Following CS2 pattern: ONE signal per category per company.
+    
+    Scoring:
+    - Each exec has: role_weight × max(ai_indicators)
+    - Company score: average across all execs
+    
+    Args:
+        company_id: Company UUID
+        executives: List of executive profiles
+        
+    Returns:
+        Single aggregated ExternalSignal
+    """
+    now = datetime.utcnow()
+    
+    if not executives:
+        # No executives - return zero score
+        return ExternalSignal(
+            id=sha256(f"{company_id}|leadership|no_data".encode()).hexdigest(),
+            company_id=company_id,
+            category=SignalCategory.leadership,
+            source=SignalSource.external,
+            signal_date=now,
+            score=0,
+            title="No leadership data available",
+            url=None,
+            metadata_json=json.dumps({
+                "executive_count": 0,
+                "company": "",
+                "executives": [],
+                "calculation": "No executives analyzed"
+            })
+        )
+    
+    # Calculate company-level leadership score (CS2 formula)
+    score_0_1 = calculate_leadership_score_0_1(executives)
+    score_0_100 = int(round(score_0_1 * 100))
+    
+    # Build detailed metadata with all executives
+    exec_details = []
+    for e in executives:
+        ai_score = _max_indicator_score(e.ai_indicators)
+        role_w = _role_weight(e.title)
+        weighted_score = role_w * ai_score
+        
+        exec_details.append({
+            "name": e.name,
+            "title": e.title,
+            "ai_indicators": [i.value for i in e.ai_indicators],
+            "max_indicator_score": round(ai_score, 2),
+            "role_weight": round(role_w, 2),
+            "weighted_contribution": round(weighted_score, 2),
+            "individual_score": int(round(ai_score * 100))
+        })
+    
+    # Sort by role importance
+    exec_details.sort(key=lambda x: x["role_weight"], reverse=True)
+    
+    meta = {
+        "executive_count": len(executives),
+        "company": executives[0].company if executives else "",
+        "aggregated_score": score_0_100,
+        "calculation_method": "average(role_weight × max_ai_indicator)",
+        "executives": exec_details
+    }
+    
+    # Create ONE signal for entire leadership team
+    signal_id = sha256(f"{company_id}|leadership|aggregated|{now.isoformat()}".encode()).hexdigest()
+    
+    return ExternalSignal(
+        id=signal_id,
+        company_id=company_id,
+        category=SignalCategory.leadership,
+        source=SignalSource.external,
+        signal_date=now,
+        score=score_0_100,
+        title=f"Leadership Team AI Expertise ({len(executives)} executives)",
+        url=None,
+        metadata_json=json.dumps(meta, default=str)
+    )
