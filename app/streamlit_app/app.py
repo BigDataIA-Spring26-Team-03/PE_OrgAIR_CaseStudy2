@@ -68,11 +68,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize API client
-@st.cache_resource
 def get_api_client():
     return APIClient()
 
 api = get_api_client()
+
 
 # Sidebar
 st.sidebar.markdown("# 🏢 PE Org-AI-R")
