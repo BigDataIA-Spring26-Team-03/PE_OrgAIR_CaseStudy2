@@ -32,7 +32,7 @@ from app.pipelines.leadership_signals import (
 class ExternalSignalsRunResult:
     company_id: str
     jobs_signals: List[ExternalSignal]
-    tech_signals: List[ExternalSignal]  # digital_presence
+    tech_signals: List[ExternalSignal]
     patent_signals: List[ExternalSignal]
     leadership_signals: List[ExternalSignal]
     summary: CompanySignalSummary
@@ -45,12 +45,15 @@ def build_company_signal_summary(
     patents_score: int,
     leadership_score: int,
 ) -> CompanySignalSummary:
-    composite_score = int(round(
-        0.30 * jobs_score +
-        0.25 * patents_score +
-        0.25 * tech_score +
-        0.20 * leadership_score
-    ))
+    # weights: Hiring 0.30, Innovation 0.25, TechStack 0.25, Leadership 0.20
+    composite_score = int(
+        round(
+            0.30 * jobs_score
+            + 0.25 * patents_score
+            + 0.25 * tech_score
+            + 0.20 * leadership_score
+        )
+    )
 
     return CompanySignalSummary(
         company_id=company_id,
@@ -69,28 +72,40 @@ def run_external_signals_pipeline(
     jobs_sources: Optional[list[str]] = None,
     jobs_location: str = "Boston, MA",
     jobs_max_results_per_source: int = 5,
-    jobs_target_company_name: Optional[str] = None,  # ✅ NEW
+    jobs_target_company_name: Optional[str] = None,         # ✅ existing
+    jobs_target_company_ticker: Optional[str] = None,       # ✅ existing
+    jobs_target_company_aliases: Optional[List[str]] = None,# ✅ NEW
     tech_items: Optional[List[TechSignalInput]] = None,
     patent_items: Optional[List[PatentSignalInput]] = None,
     leadership_profiles: Optional[List[LeadershipProfile]] = None,
 ) -> ExternalSignalsRunResult:
     # -------------------
-    # JOB SIGNALS (real scraping, company-specific)
+    # JOB SIGNALS (real scraping)
     # -------------------
     jobs_sources = jobs_sources or ["indeed", "google"]
+
+    # Build alias list safely (combine explicit aliases + ticker if present)
+    combined_aliases: Optional[List[str]] = None
+    if jobs_target_company_aliases:
+        combined_aliases = list(jobs_target_company_aliases)
+    if jobs_target_company_ticker:
+        combined_aliases = (combined_aliases or []) + [jobs_target_company_ticker]
+
     jobs: List[JobPosting] = scrape_job_postings(
-        search_query=jobs_search_query,
+        jobs_search_query,
         sources=jobs_sources,
         location=jobs_location,
         max_results_per_source=jobs_max_results_per_source,
-        target_company_name=jobs_target_company_name,  # ✅ NEW
+        target_company_name=jobs_target_company_name,
+        target_company_aliases=combined_aliases,
     )
+
     jobs_signals = job_postings_to_signals(company_id, jobs)
     jobs_summary = aggregate_job_signals(company_id, jobs_signals)
     jobs_score = jobs_summary.jobs_score
 
     # -------------------
-    # DIGITAL PRESENCE (tech)
+    # TECH SIGNALS
     # -------------------
     tech_items = tech_items or []
     tech_signals = tech_inputs_to_signals(company_id, tech_items)
@@ -98,7 +113,7 @@ def run_external_signals_pipeline(
     tech_score = tech_summary.tech_score
 
     # -------------------
-    # INNOVATION (patents)
+    # PATENT SIGNALS
     # -------------------
     patent_items = patent_items or []
     patent_signals = patent_inputs_to_signals(company_id, patent_items)
@@ -106,7 +121,7 @@ def run_external_signals_pipeline(
     patents_score = patent_summary.patents_score
 
     # -------------------
-    # LEADERSHIP
+    # LEADERSHIP SIGNALS
     # -------------------
     leadership_profiles = leadership_profiles or []
     leadership_signals = leadership_profiles_to_signals(company_id, leadership_profiles)
@@ -117,11 +132,11 @@ def run_external_signals_pipeline(
     # FINAL SUMMARY
     # -------------------
     final_summary = build_company_signal_summary(
-        company_id=company_id,
-        jobs_score=jobs_score,
-        tech_score=tech_score,
-        patents_score=patents_score,
-        leadership_score=leadership_score,
+        company_id,
+        jobs_score,
+        tech_score,
+        patents_score,
+        leadership_score,
     )
 
     return ExternalSignalsRunResult(
