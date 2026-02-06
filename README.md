@@ -226,6 +226,12 @@ See `requirements.txt` for full dependencies. Key packages:
 
 ---
 
+### 📚 Interactive Codelab
+
+Follow our step-by-step interactive tutorial:
+
+**[📖 Open Codelab: Evidence Collection - What Companies Say vs. What They Do](https://codelabs-preview.appspot.com/?file_id=1QpfDSNgSKchIRUqo1WTqa71V0DYc7TCMqaicj1PJAoU#1)**
+
 ## 📝 License
 
 Academic project for QuantUniversity — Spring 2026
