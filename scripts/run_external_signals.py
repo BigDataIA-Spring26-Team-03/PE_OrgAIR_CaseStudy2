@@ -10,9 +10,46 @@ from app.pipelines.external_signals_orchestrator import run_external_signals_pip
 # Digital Presence (REAL)
 from app.pipelines.tech_signals import tech_inputs_to_signals, scrape_tech_signal_inputs
 
-# Patents + Leadership (still mock for now in your repo)
+# Patents + Leadership (still mock for now)
 from app.pipelines.patent_signals import patent_inputs_to_signals, scrape_patent_signal_inputs_mock
 from app.pipelines.leadership_signals import scrape_leadership_profiles_mock
+
+
+def _build_job_aliases(company_name: str, ticker: Optional[str]) -> List[str]:
+    job_aliases: List[str] = [company_name]
+    if ticker:
+        job_aliases.append(ticker)
+
+    # Add common “brand/subsidiary” aliases (minimal, compliance-safe)
+    SPECIAL_ALIASES = {
+        "UNH": ["UnitedHealth", "United Health", "UnitedHealthcare", "UHG", "Optum"],
+        "JPM": ["JPMorgan", "JP Morgan", "Chase", "JPMC"],
+        "GS": ["Goldman Sachs", "Goldman"],
+        "WMT": ["Walmart", "Walmart Global Tech", "Walmart Inc", "Walmart Inc."],
+        "TGT": ["Target", "Target Corporation"],
+        "ADP": ["ADP", "Automatic Data Processing"],
+        "PAYX": ["Paychex", "Paychex Inc", "Paychex Inc."],
+        "HCA": ["HCA", "HCA Healthcare", "HCA Healthcare Inc", "HCA Healthcare Inc."],
+        "CAT": ["Caterpillar", "CAT", "Caterpillar Inc", "Caterpillar Inc."],
+        "DE": ["Deere", "John Deere", "Deere & Company"],
+    }
+
+    if ticker:
+        job_aliases += SPECIAL_ALIASES.get(ticker, [])
+
+    # de-dupe while preserving order (case-insensitive)
+    seen = set()
+    cleaned: List[str] = []
+    for a in job_aliases:
+        if not a:
+            continue
+        key = a.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(a.strip())
+
+    return cleaned
 
 
 def main() -> None:
@@ -32,7 +69,7 @@ def main() -> None:
     svc = SnowflakeService()
 
     # -------------------
-    # A) Fetch company name + domain from Snowflake (real source)
+    # A) Fetch company name + ticker + domain from Snowflake (real source)
     # -------------------
     company = svc.get_company(args.company_id)
     if not company:
@@ -44,6 +81,8 @@ def main() -> None:
         print(f"❌ Company name is missing for company_id={args.company_id}.", file=sys.stderr)
         sys.exit(1)
 
+    company_ticker: Optional[str] = company.get("ticker") or None
+
     domain_url: Optional[str] = svc.get_primary_domain_by_company_id(args.company_id)
     if not domain_url:
         print(
@@ -52,6 +91,11 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # -------------------
+    # A2) Build hiring aliases (name + ticker + known brands/subsidiaries)
+    # -------------------
+    job_aliases: List[str] = _build_job_aliases(company_name, company_ticker)
 
     # -------------------
     # B) Digital Presence (REAL) using company_name + domain_url
@@ -75,7 +119,7 @@ def main() -> None:
 
     # -------------------
     # E) Orchestrator runs jobs scraping (real via JobSpy) + aggregates everything
-    # ✅ NEW: pass company name/domain so Technology Hiring becomes company-specific
+    # ✅ company-specific hiring uses company_name + aliases
     # -------------------
     result = run_external_signals_pipeline(
         company_id=args.company_id,
@@ -84,7 +128,8 @@ def main() -> None:
         jobs_location=args.location,
         jobs_max_results_per_source=args.max_per_source,
         jobs_target_company_name=company_name,
-        jobs_target_company_domain_url=domain_url,
+        jobs_target_company_ticker=company_ticker,
+        jobs_target_company_aliases=job_aliases,  # ✅ THIS is what you were missing
         tech_items=tech_items,
         patent_items=patent_items,
         leadership_profiles=leadership_profiles,
@@ -102,7 +147,9 @@ def main() -> None:
     print("\n=== External Signals Run ===")
     print("company_id:", result.company_id)
     print("company_name:", company_name)
+    print("ticker:", company_ticker)
     print("domain_url:", domain_url)
+    print("job_aliases:", job_aliases)
     print("jobs_signals:", len(result.jobs_signals))
     print("digital_presence_signals:", len(result.tech_signals))
     print("patent_signals:", len(result.patent_signals))
