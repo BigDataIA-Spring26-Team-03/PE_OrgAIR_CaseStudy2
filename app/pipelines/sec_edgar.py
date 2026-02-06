@@ -17,8 +17,9 @@ from app.services.snowflake import SnowflakeService
 
 load_dotenv()
 
-TARGET_TICKERS = ["CAT", "DE", "UNH", "HCA", "ADP", "PAYX", "WMT", "TGT", "JPM", "GS"]
-FILING_TYPES = ["10-K", "10-Q", "8-K", "DEF 14A"]
+# Default targets (for standalone script usage)
+DEFAULT_TARGET_TICKERS = ["CAT", "DE", "UNH", "HCA", "ADP", "PAYX", "WMT", "TGT", "JPM", "GS"]
+DEFAULT_FILING_TYPES = ["10-K", "10-Q", "8-K", "DEF 14A"]
 
 SEC_REQUEST_SLEEP_SECONDS = float(os.getenv("SEC_SLEEP_SECONDS", "0.75"))
 
@@ -81,14 +82,29 @@ def build_sec_source_url(download_folder: Path, main_file: Path) -> str | None:
     if len(parts) < 3:
         return None
 
-    cik = parts[0].lstrip("0") or "0"  # SEC URL uses no leading zeros sometimes; but both often work
+    cik = parts[0].lstrip("0") or "0"
     accession_nodashes = accession.replace("-", "")
     filename = main_file.name
 
     return f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodashes}/{filename}"
 
 
-def main() -> None:
+def _run_collection(
+    tickers: list[str],
+    filing_types: list[str],
+    limit_per_type: int = 1
+) -> dict[str, int]:
+    """
+    Core collection logic - reusable by both main() and collect_for_tickers().
+    
+    Args:
+        tickers: List of company tickers to collect
+        filing_types: List of filing types (10-K, 10-Q, etc.)
+        limit_per_type: Number of filings to download per type
+        
+    Returns:
+        Dictionary with statistics
+    """
     email = require_env("SEC_EDGAR_USER_AGENT_EMAIL")
     bucket = require_env("S3_BUCKET_NAME")
     region = os.getenv("AWS_REGION", "us-east-1")
@@ -110,8 +126,8 @@ def main() -> None:
 
     sf = SnowflakeService()
 
-    # --- dynamic IN list ---
-    placeholders = ",".join([f"%(t{i})s" for i in range(len(TARGET_TICKERS))])
+    # Build dynamic IN list for SQL query
+    placeholders = ",".join([f"%(t{i})s" for i in range(len(tickers))])
 
     company_rows = sf.execute_query(
         f"""
@@ -120,7 +136,7 @@ def main() -> None:
         WHERE is_deleted = FALSE
           AND UPPER(ticker) IN ({placeholders})
         """,
-        {f"t{i}": TARGET_TICKERS[i] for i in range(len(TARGET_TICKERS))},
+        {f"t{i}": tickers[i] for i in range(len(tickers))},
     )
 
     ticker_to_company: dict[str, str] = {}
@@ -129,21 +145,29 @@ def main() -> None:
         cid = r.get("ID") if "ID" in r else r.get("id")
         ticker_to_company[str(tid).upper()] = str(cid)
 
-    missing = [t for t in TARGET_TICKERS if t not in ticker_to_company]
+    missing = [t for t in tickers if t not in ticker_to_company]
     if missing:
         raise RuntimeError(f"Missing in companies table: {missing} (insert targets first)")
 
-    inserted = skipped_dedup = skipped_missing_file = skipped_sec_download_error = skipped_s3_upload_error = 0
+    # Statistics
+    stats = {
+        "inserted": 0,
+        "skipped_dedup": 0,
+        "skipped_missing_file": 0,
+        "skipped_sec_download_error": 0,
+        "skipped_s3_upload_error": 0
+    }
+    
     run_date = date.today().isoformat()
 
-    for ticker in TARGET_TICKERS:
-        for filing_type in FILING_TYPES:
-            # --- SEC download ---
+    for ticker in tickers:
+        for filing_type in filing_types:
+            # SEC download
             try:
-                dl.get(filing_type, ticker, limit=1)
+                dl.get(filing_type, ticker, limit=limit_per_type)  # ✅ Use dynamic limit!
             except Exception as e:
                 print(f"⚠️ SEC download failed {ticker} {filing_type}: {e}")
-                skipped_sec_download_error += 1
+                stats["skipped_sec_download_error"] += 1
                 time.sleep(SEC_REQUEST_SLEEP_SECONDS)
                 continue
 
@@ -152,18 +176,18 @@ def main() -> None:
             folder = latest_download_folder(ticker, filing_type)
             if not folder:
                 print(f"⚠️ No download folder {ticker} {filing_type}")
-                skipped_missing_file += 1
+                stats["skipped_missing_file"] += 1
                 continue
 
             main_file = pick_main_file(folder)
             if not main_file:
                 print(f"⚠️ No main file {ticker} {filing_type}")
-                skipped_missing_file += 1
+                stats["skipped_missing_file"] += 1
                 continue
 
             content_hash = sha256_file(main_file)
 
-            # --- dedup ---
+            # Deduplication check
             existing = sf.execute_query(
                 """
                 SELECT id
@@ -176,7 +200,7 @@ def main() -> None:
                 {"ticker": ticker, "filing_type": filing_type, "content_hash": content_hash},
             )
             if existing:
-                skipped_dedup += 1
+                stats["skipped_dedup"] += 1
                 continue
 
             doc_id = str(uuid4())
@@ -185,17 +209,17 @@ def main() -> None:
 
             s3_key = f"sec/{ticker}/{ft_path}/{run_date}/{doc_id}{ext}"
 
-            # --- S3 upload ---
+            # S3 upload
             try:
                 s3.upload_file(str(main_file), bucket, s3_key)
             except (SSLError, BotoCoreError, ClientError) as e:
                 print(f"⚠️ S3 upload failed {ticker} {filing_type}: {e}")
-                skipped_s3_upload_error += 1
+                stats["skipped_s3_upload_error"] += 1
                 continue
 
             source_url = build_sec_source_url(folder, main_file)
 
-            # --- Insert documents row ---
+            # Insert documents row
             sf.execute_update(
                 """
                 INSERT INTO documents
@@ -217,15 +241,87 @@ def main() -> None:
                 },
             )
 
-            inserted += 1
+            stats["inserted"] += 1
             print(f"✅ {ticker} {filing_type}: documents.id={doc_id}")
 
+    # Print summary
     print("\n=== SUMMARY ===")
-    print("Inserted documents:", inserted)
-    print("Skipped dedup:", skipped_dedup)
-    print("Skipped missing file:", skipped_missing_file)
-    print("Skipped SEC download errors:", skipped_sec_download_error)
-    print("Skipped S3 upload errors:", skipped_s3_upload_error)
+    print(f"Inserted documents: {stats['inserted']}")
+    print(f"Skipped dedup: {stats['skipped_dedup']}")
+    print(f"Skipped missing file: {stats['skipped_missing_file']}")
+    print(f"Skipped SEC download errors: {stats['skipped_sec_download_error']}")
+    print(f"Skipped S3 upload errors: {stats['skipped_s3_upload_error']}")
+    
+    return stats
+
+
+# ============================================================================
+# API-FRIENDLY FUNCTION (for FastAPI router to call)
+# ============================================================================
+
+def collect_for_tickers(
+    tickers: list[str],
+    filing_types: list[str],
+    limit_per_type: int = 1
+) -> dict[str, int]:
+    """
+    API-friendly entrypoint for document collection.
+    
+    Downloads SEC filings for specified tickers, uploads to S3,
+    and inserts metadata into documents table.
+    
+    Args:
+        tickers: List of company tickers (e.g., ['WMT', 'JPM'])
+        filing_types: List of filing types (e.g., ['10-K', '10-Q'])
+        limit_per_type: Number of filings to download per type (default: 1)
+        
+    Returns:
+        Dictionary with collection statistics:
+        {
+            "inserted": 5,
+            "skipped_dedup": 2,
+            "skipped_missing_file": 0,
+            ...
+        }
+        
+    Example:
+        stats = collect_for_tickers(
+            tickers=['WMT', 'JPM'],
+            filing_types=['10-K', '10-Q'],
+            limit_per_type=2
+        )
+    """
+    # Normalize tickers to uppercase
+    tickers = [t.upper().strip() for t in tickers]
+    
+    print(f"\n{'='*60}")
+    print(f"SEC EDGAR Collection Started")
+    print(f"{'='*60}")
+    print(f"Tickers: {', '.join(tickers)}")
+    print(f"Filing Types: {', '.join(filing_types)}")
+    print(f"Limit per type: {limit_per_type}")
+    print(f"{'='*60}\n")
+    
+    # Call core collection logic
+    stats = _run_collection(tickers, filing_types, limit_per_type)
+    
+    return stats
+
+
+# ============================================================================
+# STANDALONE SCRIPT MODE (for running from command line)
+# ============================================================================
+
+def main() -> None:
+    """
+    Main function for standalone script execution.
+    Uses default TARGET_TICKERS and FILING_TYPES.
+    """
+    _run_collection(
+        tickers=DEFAULT_TARGET_TICKERS,
+        filing_types=DEFAULT_FILING_TYPES,
+        limit_per_type=1
+    )
 
 
 if __name__ == "__main__":

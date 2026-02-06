@@ -10,7 +10,7 @@ from app.services.snowflake import SnowflakeService
 
 # Pipelines (must exist in your repo)
 from app.pipelines.sec_edgar import collect_for_tickers
-from app.pipelines.document_parserfrom_s3 import main as parse_main
+from app.pipelines.document_parser import main as parse_main
 from app.pipelines.document_text_cleaner import main as clean_main
 from app.pipelines.document_chunker_s3 import main as chunk_main
 
