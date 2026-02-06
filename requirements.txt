@@ -17,6 +17,8 @@ requests
 PyMuPDF
 pdfplumber
 pypdfium2
+python-jobspy
+
 
 
 
