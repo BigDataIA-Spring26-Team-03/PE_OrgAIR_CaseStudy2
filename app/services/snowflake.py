@@ -1,10 +1,12 @@
 # app/services/snowflake.py
 import snowflake.connector
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterable
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
+import json
 
 from app.config import settings
+from app.models.signal import ExternalSignal, CompanySignalSummary
 
 
 class SnowflakeService:
@@ -69,6 +71,176 @@ class SnowflakeService:
             return "unhealthy"
 
     # ========================================
+    # CASE STUDY 2: EXTERNAL SIGNALS
+    # ========================================
+
+    def insert_external_signals(self, signals: Iterable[ExternalSignal]) -> int:
+        """
+        Insert ExternalSignal rows into CS2 external_signals schema.
+        Maps:
+          jobs   -> technology_hiring
+          tech   -> digital_presence
+          patents-> innovation_activity
+
+        IMPORTANT FIX:
+        Your Snowflake setup rejects/rewrites PARSE_JSON/TRY_PARSE_JSON when the JSON
+        string is passed as a bound parameter, causing METADATA to be treated as VARCHAR.
+        So we inline the JSON as a SQL string literal (escaped) and call PARSE_JSON('...'),
+        which always yields a VARIANT.
+        """
+        rows = list(signals)
+        if not rows:
+            return 0
+
+        def map_category(cat: str) -> str:
+            c = (cat or "").lower()
+            if c == "jobs":
+                return "technology_hiring"
+            if c == "tech":
+                return "digital_presence"
+            if c == "patents":
+                return "innovation_activity"
+            return "leadership_signals"
+
+        def _ensure_json_string(val: Any) -> str:
+            """
+            Return a VALID JSON string.
+            - If val is dict/list -> dumps
+            - If val is str and valid JSON -> keep
+            - Else -> wrap into {"raw": "..."}
+            """
+            if val is None:
+                return "{}"
+            if isinstance(val, (dict, list)):
+                return json.dumps(val)
+            if isinstance(val, str):
+                s = val.strip()
+                if not s:
+                    return "{}"
+                try:
+                    json.loads(s)
+                    return s
+                except Exception:
+                    return json.dumps({"raw": s})
+            return json.dumps({"raw": str(val)})
+
+        def _sql_escape_string_literal(s: str) -> str:
+            """
+            Escape for single-quoted SQL literal: ' -> ''
+            (Snowflake accepts doubled quotes inside single-quoted literals)
+            """
+            return s.replace("'", "''")
+
+        conn = self.connect()
+        cursor = conn.cursor()
+        inserted = 0
+
+        try:
+            for s in rows:
+                sid = s.id if (isinstance(s.id, str) and len(s.id) <= 36) else str(uuid4())
+
+                category = s.category.value if hasattr(s.category, "value") else str(s.category)
+                source = s.source.value if hasattr(s.source, "value") else str(s.source)
+
+                meta_json = _ensure_json_string(getattr(s, "metadata_json", None))
+                meta_sql_literal = _sql_escape_string_literal(meta_json)
+
+                # Inline JSON literal so PARSE_JSON definitely returns VARIANT
+                query = f"""
+                    INSERT INTO external_signals
+                        (id, company_id, category, source, signal_date, raw_value, normalized_score, confidence, metadata)
+                    SELECT
+                        %(id)s,
+                        %(company_id)s,
+                        %(category)s,
+                        %(source)s,
+                        %(signal_date)s,
+                        %(raw_value)s,
+                        %(normalized_score)s,
+                        %(confidence)s,
+                        PARSE_JSON('{meta_sql_literal}')
+                """
+
+                params = {
+                    "id": sid,
+                    "company_id": str(s.company_id),
+                    "category": map_category(category),
+                    "source": source,
+                    "signal_date": s.signal_date.date() if hasattr(s.signal_date, "date") else s.signal_date,
+                    "raw_value": s.title or "",
+                    "normalized_score": float(s.score),
+                    "confidence": 0.8,
+                }
+
+                cursor.execute(query, params)
+                inserted += 1
+
+            conn.commit()
+            return inserted
+
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def upsert_company_signal_summary(self, summary: CompanySignalSummary, signal_count: int = 0) -> None:
+        """
+        Upsert into CS2 company_signal_summaries schema.
+        Maps:
+          jobs_score   -> technology_hiring_score
+          tech_score   -> digital_presence_score
+          patents_score-> innovation_activity_score
+        Also requires ticker (pulled from companies table).
+        """
+        company = self.get_company(str(summary.company_id))
+        ticker = (company or {}).get("ticker") or ""
+
+        query = """
+            MERGE INTO company_signal_summaries t
+            USING (
+                SELECT
+                    %(company_id)s AS company_id,
+                    %(ticker)s AS ticker,
+                    %(technology_hiring_score)s AS technology_hiring_score,
+                    %(innovation_activity_score)s AS innovation_activity_score,
+                    %(digital_presence_score)s AS digital_presence_score,
+                    %(leadership_signals_score)s AS leadership_signals_score,
+                    %(composite_score)s AS composite_score,
+                    %(signal_count)s AS signal_count
+            ) s
+            ON t.company_id = s.company_id
+            WHEN MATCHED THEN UPDATE SET
+                ticker = s.ticker,
+                technology_hiring_score = s.technology_hiring_score,
+                innovation_activity_score = s.innovation_activity_score,
+                digital_presence_score = s.digital_presence_score,
+                leadership_signals_score = s.leadership_signals_score,
+                composite_score = s.composite_score,
+                signal_count = s.signal_count,
+                last_updated = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT
+                (company_id, ticker, technology_hiring_score, innovation_activity_score,
+                 digital_presence_score, leadership_signals_score, composite_score, signal_count, last_updated)
+            VALUES
+                (s.company_id, s.ticker, s.technology_hiring_score, s.innovation_activity_score,
+                 s.digital_presence_score, s.leadership_signals_score, s.composite_score, s.signal_count, CURRENT_TIMESTAMP())
+        """
+
+        params = {
+            "company_id": str(summary.company_id),
+            "ticker": ticker,
+            "technology_hiring_score": float(summary.jobs_score),
+            "innovation_activity_score": float(summary.patents_score),
+            "digital_presence_score": float(summary.tech_score),
+            "leadership_signals_score": float(getattr(summary, "leadership_score", 0)),
+            "composite_score": float(summary.composite_score),
+            "signal_count": int(signal_count),
+        }
+
+        self.execute_update(query, params)
+
+    # ========================================
     # COMPANY CRUD
     # ========================================
 
@@ -98,6 +270,26 @@ class SnowflakeService:
         """
         results = self.execute_query(query, {"id": company_id})
         return results[0] if results else None
+
+    # ✅ NEW: domain lookup for digital presence scraping (with both fixes)
+    def get_primary_domain_by_company_id(self, company_id: str) -> Optional[str]:
+        """
+        Returns the primary website/domain for a company from company_domains.
+
+        Fixes:
+        1) Don't require is_primary=TRUE strictly (many rows may be NULL).
+        2) Deterministic fallback ordering: prefer primary, else most recently updated/created.
+        """
+        query = """
+            SELECT domain_url
+            FROM company_domains
+            WHERE company_id = %(company_id)s
+              AND (is_primary = TRUE OR is_primary IS NULL)
+            ORDER BY is_primary DESC, updated_at DESC, created_at DESC
+            LIMIT 1
+        """
+        rows = self.execute_query(query, {"company_id": company_id})
+        return rows[0]["domain_url"] if rows else None
 
     def list_companies(self, limit: int = 10, offset: int = 0) -> List[Dict]:
         query = """
@@ -162,7 +354,6 @@ class SnowflakeService:
     def create_assessment(self, assessment_data: Dict) -> str:
         assessment_id = str(uuid4())
 
-        # convert enum -> string if needed
         assessment_type = assessment_data["assessment_type"]
         if hasattr(assessment_type, "value"):
             assessment_type = assessment_type.value
@@ -280,7 +471,6 @@ class SnowflakeService:
 
         for key, value in update_data.items():
             if value is not None:
-                # convert enum -> string if needed
                 if hasattr(value, "value"):
                     value = value.value
                 set_clauses.append(f"{key} = %({key})s")
