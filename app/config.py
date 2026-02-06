@@ -4,6 +4,9 @@ from functools import lru_cache
 from typing import Optional
 from pydantic import model_validator
 from pydantic_settings import SettingsConfigDict
+from pydantic import Field
+from pydantic import AliasChoices
+
 
 class Settings(BaseSettings):
     """
@@ -30,7 +33,12 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: Optional[str] = "us-east-1"
-    S3_BUCKET: Optional[str] = None
+    S3_BUCKET: Optional[str] = Field(default=None, validation_alias=AliasChoices("S3_BUCKET", "S3_BUCKET_NAME"))
+
+
+    SEC_EDGAR_USER_AGENT_EMAIL: str
+    SEC_SLEEP_SECONDS: float = 0.75
+
     
     # NEW: USPTO API (for CS2)
     uspto_api_key: Optional[str] = None
@@ -57,7 +65,8 @@ class Settings(BaseSettings):
     
     model_config = SettingsConfigDict(
         env_file=".env",
-        case_sensitive=False
+        case_sensitive=False,
+        extra="ignore",
     )
 
 @lru_cache
