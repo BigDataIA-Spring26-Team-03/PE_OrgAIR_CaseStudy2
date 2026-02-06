@@ -22,7 +22,8 @@ def create_app() -> FastAPI:
     app.include_router(dimension_router, prefix="/api/v1")
     app.include_router(scores_router, prefix="/api/v1")
     app.include_router(documents_router)
-    app.include_router(signals_router)
+    app.include_router(signals_router, prefix="/api/v1")
+
 
     return app
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import gzip
 import io
 import json
-import gzip
 import logging
 from typing import Any, Dict, Optional
 
@@ -26,29 +26,26 @@ class S3Storage:
     """
 
     def __init__(self) -> None:
-        # ✅ Uses Settings-derived bucket so S3_BUCKET or S3_BUCKET_NAME both work
-        self.bucket = settings.resolved_s3_bucket
-        self.prefix = (settings.s3_prefix or "").strip("/")
+        bucket = settings.S3_BUCKET_NAME
+        if not bucket:
+            raise ValueError("S3 bucket not configured. Set S3_BUCKET_NAME (or S3_BUCKET).")
+
+        self.bucket = bucket
+        self.prefix = ""  # no prefix support in current Settings
 
         self.client = boto3.client(
             "s3",
-            region_name=settings.resolved_aws_region,
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
+            region_name=settings.AWS_REGION or "us-east-1",
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
         )
 
-    # -------------------------
-    # Internal helpers
-    # -------------------------
     def _full_key(self, key: str) -> str:
         key = key.lstrip("/")
         if self.prefix:
             return f"{self.prefix}/{key}"
         return key
 
-    # -------------------------
-    # Write operations
-    # -------------------------
     def put_bytes(self, key: str, data: bytes, content_type: Optional[str] = None) -> str:
         full_key = self._full_key(key)
 
@@ -78,10 +75,6 @@ class S3Storage:
         )
 
     def put_json(self, key: str, obj: Dict[str, Any], gzip_compress: bool = False) -> str:
-        """
-        Writes JSON, optionally gzip-compressed.
-        ✅ Fixed bug: correct call to put_bytes(key=..., data=...)
-        """
         payload = json.dumps(obj, ensure_ascii=False).encode("utf-8", errors="ignore")
 
         if gzip_compress:
@@ -92,14 +85,7 @@ class S3Storage:
 
         return self.put_bytes(key=key, data=payload, content_type="application/json")
 
-    # -------------------------
-    # Read operations
-    # -------------------------
     def exists(self, key: str) -> bool:
-        """
-        Check if an object exists in S3.
-        Used heavily for idempotency checks.
-        """
         full_key = self._full_key(key)
         try:
             self.client.head_object(Bucket=self.bucket, Key=full_key)
@@ -116,17 +102,9 @@ class S3Storage:
         return resp["Body"].read()
 
     def read_text_auto(self, key: str) -> str:
-        """
-        Reads either plain text or gzip content safely.
-        - Detects gzip via magic bytes OR .gz suffix
-        - Never assumes extension correctness
-        """
         data = self.get_bytes(key)
 
-        is_gz = (
-            key.endswith(".gz")
-            or (len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B)
-        )
+        is_gz = key.endswith(".gz") or (len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B)
 
         if is_gz:
             try:
@@ -138,15 +116,9 @@ class S3Storage:
         return data.decode("utf-8", errors="ignore")
 
     def read_json_auto(self, key: str) -> Dict[str, Any]:
-        """
-        Reads JSON or gzip-compressed JSON transparently.
-        """
         data = self.get_bytes(key)
 
-        is_gz = (
-            key.endswith(".gz")
-            or (len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B)
-        )
+        is_gz = key.endswith(".gz") or (len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B)
 
         if is_gz:
             try:
