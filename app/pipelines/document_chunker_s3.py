@@ -43,13 +43,6 @@ def filing_type_norm(filing_type: str) -> str:
     return filing_type.upper().strip().replace(" ", "").replace("-", "")
 
 
-def processed_s3_key_from_raw(raw_key: str) -> str:
-    # sec/.../<doc>.<ext> -> processed/.../<doc>.txt.gz
-    k = raw_key.replace("sec/", "processed/", 1)
-    k = re.sub(r"\.[^./]+$", ".txt.gz", k)
-    return k
-
-
 def take_overlap_words(text: str, overlap: int) -> str:
     words = text.split()
     if not words:
@@ -76,7 +69,7 @@ def sentence_aware_split(text: str, max_words: int, overlap_words: int) -> List[
     if not sents:
         words = text.split()
         out: List[str] = []
-        step = max_words - overlap_words
+        step = max(1, max_words - overlap_words)
         i = 0
         while i < len(words):
             out.append(" ".join(words[i : i + max_words]).strip())
@@ -99,7 +92,7 @@ def sentence_aware_split(text: str, max_words: int, overlap_words: int) -> List[
         if w > max_words:
             flush()
             words = s.split()
-            step = max_words - overlap_words
+            step = max(1, max_words - overlap_words)
             i = 0
             while i < len(words):
                 out.append(" ".join(words[i : i + max_words]).strip())
@@ -116,7 +109,7 @@ def sentence_aware_split(text: str, max_words: int, overlap_words: int) -> List[
 
     flush()
 
-    # overlap without exceeding max
+    # overlap (without exceeding max)
     if overlap_words > 0 and len(out) > 1:
         overlapped: List[str] = []
         prev = ""
@@ -244,7 +237,7 @@ def is_noise_block(b: str) -> bool:
         if short_lines / max(len(lines), 1) > 0.65:
             return True
 
-    # low alpha ratio (rare after cleaner)
+    # low alpha ratio
     letters = sum(ch.isalpha() for ch in b)
     if wc < 50 and letters / max(len(b), 1) < 0.10:
         return True
@@ -301,7 +294,7 @@ def split_semantic_blocks(text: str) -> List[str]:
 
 
 # -----------------------------
-# Chunk builder
+# Chunk builder (enforces 500–1000)
 # -----------------------------
 def build_chunks_for_section(sec_text: str) -> List[str]:
     blocks = split_semantic_blocks(sec_text)
@@ -333,6 +326,7 @@ def build_chunks_for_section(sec_text: str) -> List[str]:
     for b in expanded:
         w = word_count(b)
 
+        # if a single block is already in range and buffer empty, keep it
         if not buf and MIN_WORDS <= w <= MAX_WORDS:
             chunks.append(b.strip())
             continue
@@ -349,38 +343,41 @@ def build_chunks_for_section(sec_text: str) -> List[str]:
 
     flush()
 
-    # merge chunks < MIN_WORDS into neighbors where possible
-    merged: List[str] = []
-    i = 0
-    while i < len(chunks):
-        c = chunks[i]
-        wc = word_count(c)
+    # merge small chunks into neighbors where possible
+    if len(chunks) > 1:
+        merged: List[str] = []
+        i = 0
+        while i < len(chunks):
+            c = chunks[i]
+            wc = word_count(c)
 
-        if wc >= MIN_WORDS or len(chunks) == 1:
-            merged.append(c)
-            i += 1
-            continue
-
-        if i + 1 < len(chunks):
-            combo = (c + "\n\n" + chunks[i + 1]).strip()
-            if word_count(combo) <= MAX_WORDS:
-                merged.append(combo)
-                i += 2
-                continue
-
-        if merged:
-            combo = (merged[-1] + "\n\n" + c).strip()
-            if word_count(combo) <= MAX_WORDS:
-                merged[-1] = combo
+            if wc >= MIN_WORDS:
+                merged.append(c)
                 i += 1
                 continue
 
-        merged.append(c)
-        i += 1
+            # try merge forward
+            if i + 1 < len(chunks):
+                combo = (c + "\n\n" + chunks[i + 1]).strip()
+                if word_count(combo) <= MAX_WORDS:
+                    merged.append(combo)
+                    i += 2
+                    continue
 
-    chunks = merged
+            # else try merge backward
+            if merged:
+                combo = (merged[-1] + "\n\n" + c).strip()
+                if word_count(combo) <= MAX_WORDS:
+                    merged[-1] = combo
+                    i += 1
+                    continue
 
-    # overlap (no exceed MAX)
+            merged.append(c)
+            i += 1
+
+        chunks = merged
+
+    # overlap (do not exceed MAX)
     if OVERLAP_WORDS > 0 and len(chunks) > 1:
         out: List[str] = []
         prev = ""
@@ -397,7 +394,7 @@ def build_chunks_for_section(sec_text: str) -> List[str]:
             prev = c
         chunks = out
 
-    # last guard
+    # last guard: force split if still > MAX
     final: List[str] = []
     for c in chunks:
         if word_count(c) <= MAX_WORDS:
@@ -409,7 +406,10 @@ def build_chunks_for_section(sec_text: str) -> List[str]:
 
 
 def find_char_span(doc_text: str, chunk_text: str) -> Tuple[Optional[int], Optional[int]]:
-    # don't lie: only set if we find the exact substring
+    """
+    Best-effort char offsets:
+    only set if we find exact substring match in the *same normalized doc_text* we chunked from.
+    """
     idx = doc_text.find(chunk_text)
     if idx == -1:
         return None, None
@@ -417,7 +417,7 @@ def find_char_span(doc_text: str, chunk_text: str) -> Tuple[Optional[int], Optio
 
 
 # -----------------------------
-# Snowflake row
+# Snowflake row model
 # -----------------------------
 @dataclass(frozen=True)
 class ChunkRow:
@@ -441,16 +441,16 @@ class DocumentChunkerS3Pipeline:
         s3: Optional[S3Storage] = None,
     ) -> None:
         self.sf = sf or SnowflakeService()
-        self.s3 = s3 or S3Storage.from_env()
+        self.s3 = s3 or S3Storage()
 
     def fetch_cleaned_documents(self, limit: int) -> List[Dict[str, Any]]:
-        # escape % for Snowflake pyformat
+        # IMPORTANT: chunker reads ONLY from documents.s3_key (processed key).
         return self.sf.execute_query(
             """
             SELECT id, ticker, filing_type, s3_key
             FROM documents
             WHERE status='cleaned'
-              AND (error_message IS NULL OR error_message NOT ILIKE 'dedup:%%')
+              AND s3_key IS NOT NULL
             ORDER BY created_at
             LIMIT %(limit)s
             """,
@@ -533,7 +533,7 @@ class DocumentChunkerS3Pipeline:
             doc_id = str(row_get(d, "id", "ID"))
             ticker = str(row_get(d, "ticker", "TICKER") or "").upper()
             filing_type = str(row_get(d, "filing_type", "FILING_TYPE") or "")
-            raw_key = str(row_get(d, "s3_key", "S3_KEY") or "")
+            processed_key = str(row_get(d, "s3_key", "S3_KEY") or "").strip()
 
             scanned += 1
             print(f"🧩 Chunking: {ticker} {filing_type} id={doc_id}")
@@ -542,24 +542,25 @@ class DocumentChunkerS3Pipeline:
                 existing = self.existing_chunk_count(doc_id)
                 if existing > 0:
                     skipped += 1
-                    self.sf.execute_update(
-                        """
-                        UPDATE documents
-                        SET status='chunked',
-                            chunk_count=COALESCE(chunk_count, %(cnt)s),
-                            processed_at=COALESCE(processed_at, CURRENT_TIMESTAMP())
-                        WHERE id=%(id)s
-                        """,
-                        {"id": doc_id, "cnt": existing},
-                    )
+                    self.mark_chunked(doc_id, chunk_count=existing)
                     print(f"↪️  SKIP (already chunked): id={doc_id} chunks={existing}")
                     continue
 
+                if not processed_key:
+                    raise ValueError("documents.s3_key is NULL/empty (must point to processed text)")
+
+                # enforce the rule: do NOT reconstruct; s3_key must already be processed artifact
+                if not processed_key.startswith("processed/"):
+                    raise ValueError(
+                        f"documents.s3_key must point to processed/* but got: {processed_key}. "
+                        f"Fix cleaner to update documents.s3_key to processed key."
+                    )
+
                 t0 = time.time()
 
-                processed_key = processed_s3_key_from_raw(raw_key)
-                doc_text = normalize_ws(self.s3.get_text_gz(key=processed_key))
-                if not doc_text:
+                # S3 read: supports .txt or .txt.gz transparently
+                doc_text = normalize_ws(self.s3.read_text_auto(processed_key))
+                if not doc_text.strip():
                     raise ValueError("processed text empty")
 
                 sections = slice_sections(doc_text, filing_type)
@@ -572,16 +573,15 @@ class DocumentChunkerS3Pipeline:
                     sec_chunks = build_chunks_for_section(sec.text)
 
                     for c in sec_chunks:
+                        c = normalize_ws(c)
                         wc = word_count(c)
                         if wc == 0:
                             continue
 
-                        if wc < MIN_WORDS and len(sec_chunks) > 1:
-                            continue
-
+                        # hard guard: if something still ends up > MAX, split again
                         if wc > MAX_WORDS:
-                            subs = sentence_aware_split(c, MAX_WORDS, OVERLAP_WORDS)
-                            for sub in subs:
+                            for sub in sentence_aware_split(c, MAX_WORDS, OVERLAP_WORDS):
+                                sub = normalize_ws(sub)
                                 swc = word_count(sub)
                                 if swc == 0:
                                     continue
@@ -619,7 +619,8 @@ class DocumentChunkerS3Pipeline:
                 if not chunk_rows:
                     raise ValueError("No chunks produced")
 
-                BATCH_SIZE = 150
+                # Batch insert (avoid Snowflake param explosion)
+                BATCH_SIZE = 75
                 for i in range(0, len(chunk_rows), BATCH_SIZE):
                     self.insert_chunks_batch(chunk_rows[i : i + BATCH_SIZE])
 

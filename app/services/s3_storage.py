@@ -1,163 +1,157 @@
 from __future__ import annotations
 
-import gzip
+import io
 import json
-import mimetypes
-from dataclasses import dataclass
-from typing import Any, List, Optional
+import gzip
+import logging
+from typing import Any, Dict, Optional
 
 import boto3
-from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 
-@dataclass
+
 class S3Storage:
     """
-    Minimal, production-style S3 wrapper.
+    S3 artifact storage layer.
 
-    Required by pipelines:
-      - get_bytes(bucket, key) -> bytes
-      - put_bytes(bucket, key, data, content_type=...) -> None
-      - exists(bucket, key) -> bool
-      - list_keys(bucket, prefix, max_keys=...) -> List[str]
-
-    Case Study 2 helpers:
-      - put_json_gz(key, payload) / get_json_gz(key)
-      - put_text_gz(key, text) / get_text_gz(key)
+    Rules:
+    - S3 stores artifacts only (raw / parsed / processed)
+    - Snowflake is the source of truth for state
+    - Supports both plain text and gzip transparently
+    - Never reconstructs logical state from S3
     """
 
-    s3_client: Any
-    bucket: str
+    def __init__(self) -> None:
+        # ✅ Uses Settings-derived bucket so S3_BUCKET or S3_BUCKET_NAME both work
+        self.bucket = settings.resolved_s3_bucket
+        self.prefix = (settings.s3_prefix or "").strip("/")
 
-    @classmethod
-    def from_env(cls) -> "S3Storage":
-        region = getattr(settings, "AWS_REGION", None) or getattr(settings, "AWS_DEFAULT_REGION", None) or "us-east-1"
-        bucket = getattr(settings, "S3_BUCKET", None) or getattr(settings, "AWS_S3_BUCKET", None) or getattr(
-            settings, "S3_BUCKET_NAME", None
+        self.client = boto3.client(
+            "s3",
+            region_name=settings.resolved_aws_region,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
         )
-        if not bucket:
-            raise RuntimeError(
-                "Missing S3 bucket setting. Set S3_BUCKET (or AWS_S3_BUCKET / S3_BUCKET_NAME) in .env / settings."
-            )
 
-        access_key = getattr(settings, "AWS_ACCESS_KEY_ID", None)
-        secret_key = getattr(settings, "AWS_SECRET_ACCESS_KEY", None)
-        session_token = getattr(settings, "AWS_SESSION_TOKEN", None)
+    # -------------------------
+    # Internal helpers
+    # -------------------------
+    def _full_key(self, key: str) -> str:
+        key = key.lstrip("/")
+        if self.prefix:
+            return f"{self.prefix}/{key}"
+        return key
 
-        client_kwargs: dict[str, Any] = {
-            "region_name": region,
-            "config": Config(retries={"max_attempts": 12, "mode": "adaptive"}, connect_timeout=30, read_timeout=120),
-        }
-        if access_key and secret_key:
-            client_kwargs["aws_access_key_id"] = access_key
-            client_kwargs["aws_secret_access_key"] = secret_key
-            if session_token:
-                client_kwargs["aws_session_token"] = session_token
+    # -------------------------
+    # Write operations
+    # -------------------------
+    def put_bytes(self, key: str, data: bytes, content_type: Optional[str] = None) -> str:
+        full_key = self._full_key(key)
 
-        s3 = boto3.client("s3", **client_kwargs)
-        return cls(s3_client=s3, bucket=bucket)
+        extra = {}
+        if content_type:
+            extra["ContentType"] = content_type
 
-    # ---------------------------
-    # Base primitives
-    # ---------------------------
-    def get_bytes(self, *, bucket: Optional[str] = None, key: str) -> bytes:
-        b = bucket or self.bucket
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=full_key,
+            Body=data,
+            **extra,
+        )
+        return full_key
+
+    def put_text(self, key: str, text: str, gzip_compress: bool = False) -> str:
+        if gzip_compress:
+            buf = io.BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+                gz.write(text.encode("utf-8", errors="ignore"))
+            return self.put_bytes(key, buf.getvalue(), content_type="text/plain")
+
+        return self.put_bytes(
+            key=key,
+            data=text.encode("utf-8", errors="ignore"),
+            content_type="text/plain",
+        )
+
+    def put_json(self, key: str, obj: Dict[str, Any], gzip_compress: bool = False) -> str:
+        """
+        Writes JSON, optionally gzip-compressed.
+        ✅ Fixed bug: correct call to put_bytes(key=..., data=...)
+        """
+        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8", errors="ignore")
+
+        if gzip_compress:
+            buf = io.BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+                gz.write(payload)
+            return self.put_bytes(key, buf.getvalue(), content_type="application/json")
+
+        return self.put_bytes(key=key, data=payload, content_type="application/json")
+
+    # -------------------------
+    # Read operations
+    # -------------------------
+    def exists(self, key: str) -> bool:
+        """
+        Check if an object exists in S3.
+        Used heavily for idempotency checks.
+        """
+        full_key = self._full_key(key)
         try:
-            resp = self.s3_client.get_object(Bucket=b, Key=key)
-            return resp["Body"].read()
-        except ClientError as e:
-            raise RuntimeError(f"S3 get_object failed bucket={b} key={key}: {e}") from e
-
-    def put_bytes(
-        self,
-        *,
-        bucket: Optional[str] = None,
-        key: str,
-        data: bytes,
-        content_type: Optional[str] = None,
-        content_encoding: Optional[str] = None,
-    ) -> None:
-        b = bucket or self.bucket
-        ct = content_type
-        if not ct:
-            ct, _ = mimetypes.guess_type(key)
-        if not ct:
-            ct = "application/octet-stream"
-
-        kwargs: dict[str, Any] = {"Bucket": b, "Key": key, "Body": data, "ContentType": ct}
-        if content_encoding:
-            kwargs["ContentEncoding"] = content_encoding
-
-        try:
-            self.s3_client.put_object(**kwargs)
-        except ClientError as e:
-            raise RuntimeError(f"S3 put_object failed bucket={b} key={key}: {e}") from e
-
-    def exists(self, *, bucket: Optional[str] = None, key: str) -> bool:
-        b = bucket or self.bucket
-        try:
-            self.s3_client.head_object(Bucket=b, Key=key)
+            self.client.head_object(Bucket=self.bucket, Key=full_key)
             return True
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
-            if code in {"404", "NoSuchKey", "NotFound"}:
+            if code in ("404", "NoSuchKey", "NotFound"):
                 return False
             raise
 
-    def list_keys(self, *, bucket: Optional[str] = None, prefix: str, max_keys: int = 1000) -> List[str]:
-        b = bucket or self.bucket
-        keys: List[str] = []
-        token = None
+    def get_bytes(self, key: str) -> bytes:
+        full_key = self._full_key(key)
+        resp = self.client.get_object(Bucket=self.bucket, Key=full_key)
+        return resp["Body"].read()
 
-        while True:
-            kwargs: dict[str, Any] = {"Bucket": b, "Prefix": prefix, "MaxKeys": min(max_keys, 1000)}
-            if token:
-                kwargs["ContinuationToken"] = token
+    def read_text_auto(self, key: str) -> str:
+        """
+        Reads either plain text or gzip content safely.
+        - Detects gzip via magic bytes OR .gz suffix
+        - Never assumes extension correctness
+        """
+        data = self.get_bytes(key)
 
-            resp = self.s3_client.list_objects_v2(**kwargs)
-            for obj in resp.get("Contents", []):
-                keys.append(obj["Key"])
-                if len(keys) >= max_keys:
-                    return keys
-
-            if not resp.get("IsTruncated"):
-                return keys
-            token = resp.get("NextContinuationToken")
-
-    # ---------------------------
-    # Case Study 2 helpers
-    # ---------------------------
-    def put_json_gz(self, *, key: str, payload: dict[str, Any], bucket: Optional[str] = None) -> None:
-        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        gz = gzip.compress(raw, compresslevel=6)
-        self.put_bytes(
-            bucket=bucket,
-            key=key,
-            data=gz,
-            content_type="application/json",
-            content_encoding="gzip",
+        is_gz = (
+            key.endswith(".gz")
+            or (len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B)
         )
 
-    def get_json_gz(self, *, key: str, bucket: Optional[str] = None) -> dict[str, Any]:
-        data = self.get_bytes(bucket=bucket, key=key)
-        raw = gzip.decompress(data)
-        return json.loads(raw.decode("utf-8", errors="ignore"))
+        if is_gz:
+            try:
+                return gzip.decompress(data).decode("utf-8", errors="ignore")
+            except Exception:
+                logger.warning("Failed gzip decode for %s, falling back to raw decode", key)
+                return data.decode("utf-8", errors="ignore")
 
-    def put_text_gz(self, *, key: str, text: str, bucket: Optional[str] = None) -> None:
-        raw = text.encode("utf-8", errors="ignore")
-        gz = gzip.compress(raw, compresslevel=6)
-        self.put_bytes(
-            bucket=bucket,
-            key=key,
-            data=gz,
-            content_type="text/plain",
-            content_encoding="gzip",
+        return data.decode("utf-8", errors="ignore")
+
+    def read_json_auto(self, key: str) -> Dict[str, Any]:
+        """
+        Reads JSON or gzip-compressed JSON transparently.
+        """
+        data = self.get_bytes(key)
+
+        is_gz = (
+            key.endswith(".gz")
+            or (len(data) >= 2 and data[0] == 0x1F and data[1] == 0x8B)
         )
 
-    def get_text_gz(self, *, key: str, bucket: Optional[str] = None) -> str:
-        data = self.get_bytes(bucket=bucket, key=key)
-        raw = gzip.decompress(data)
-        return raw.decode("utf-8", errors="ignore")
+        if is_gz:
+            try:
+                data = gzip.decompress(data)
+            except Exception:
+                logger.warning("Failed gzip decode for %s, using raw bytes", key)
+
+        return json.loads(data.decode("utf-8", errors="ignore"))

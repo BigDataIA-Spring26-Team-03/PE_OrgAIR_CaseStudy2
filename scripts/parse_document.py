@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT))
 # Load .env
 load_dotenv(dotenv_path=ROOT / ".env")
 
-from app.pipelines.document_parser_s3 import main
+from app.pipelines.document_parser_from_s3 import main
 
 if __name__ == "__main__":
     main(limit=50)

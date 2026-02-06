@@ -11,5 +11,4 @@ print("🚀 Starting chunk_documents_from_s3.py ...")
 from app.pipelines.document_chunker_s3 import main
 
 if __name__ == "__main__":
-    # Use a big limit to chunk everything in one run
     main(limit=1000)
