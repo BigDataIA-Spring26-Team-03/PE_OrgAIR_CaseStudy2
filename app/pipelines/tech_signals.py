@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from statistics import mean
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict, Iterable
+
+import requests
+from bs4 import BeautifulSoup
 
 from app.models.signal import CompanySignalSummary, ExternalSignal, SignalCategory, SignalSource
 
@@ -15,7 +18,7 @@ from app.models.signal import CompanySignalSummary, ExternalSignal, SignalCatego
 class TechSignalInput:
     """
     Represents a single tech-stack signal for a company.
-    Examples: detected technologies, stack mentions, vendor tools, platform usage.
+    For Digital Presence we collect from a company's public website (domain).
     """
     title: str
     description: str
@@ -24,137 +27,38 @@ class TechSignalInput:
     observed_date: Optional[str] = None  # keep string for now
 
 
-# --- Keyword sets (keep lightweight, but include what our lab examples use) ---
-
+# -----------------------------
+# Keyword dictionaries (expandable)
+# -----------------------------
 CORE_AI_TECH: Set[str] = {
-    "openai",
-    "chatgpt",
-    "gpt",
-    "llm",
-    "transformers",
-    "rag",
-    "vector database",
-    "vector db",
-    "pytorch",
-    "tensorflow",
-    "keras",
-    "hugging face",
-    "huggingface",
-    "langchain",
-    "llamaindex",
+    "openai", "chatgpt", "gpt", "llm", "transformers", "rag", "vector database",
+    "pytorch", "tensorflow", "keras", "hugging face", "langchain", "llamaindex",
+    "embedding", "embeddings", "genai", "generative ai",
 }
 
 DATA_PLATFORM_TECH: Set[str] = {
-    "snowflake",
-    "databricks",
-    "spark",
-    "airflow",
-    "kafka",
-    "dbt",
-    "delta lake",
-    "s3",
-    "adls",
-    "bigquery",
-    "redshift",
+    "snowflake", "databricks", "spark", "airflow", "kafka", "dbt", "delta lake",
+    "s3", "adls", "bigquery", "redshift",
 }
 
 CLOUD_AI_SERVICES: Set[str] = {
-    "aws sagemaker",
-    "sagemaker",
-    "bedrock",
-    "azure openai",
-    "azure ml",
-    "vertex ai",
-    "google cloud ai",
-    "amazon comprehend",
+    "aws sagemaker", "bedrock", "azure openai", "azure ml", "vertex ai",
+    "google cloud ai", "amazon comprehend",
 }
 
-# IMPORTANT: include common “tech adoption” signals used in examples
-GENERAL_TECH: Set[str] = {
-    "azure",
-    "aws",
-    "gcp",
-    "kubernetes",
-    "k8s",
-    "docker",
-    "github",
-    "open source",
-    "opensource",
+WEB_STACK_TECH: Set[str] = {
+    "react", "next.js", "nextjs", "angular", "vue", "svelte",
+    "node.js", "nodejs", "express", "django", "flask", "fastapi",
+    "kubernetes", "docker", "terraform",
+    "cloudflare", "akamai",
+    "segment", "amplitude", "mixpanel",
+    "google analytics", "gtag", "gtm", "tag manager",
+    "stripe", "paypal",
 }
 
 
 def _normalize(text: str) -> str:
-    """
-    Normalize text for robust matching:
-    - lowercase
-    - replace common separators with spaces
-    - collapse repeated whitespace
-    """
-    t = (text or "").lower()
-    t = t.replace("-", " ").replace("_", " ")
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-
-def _contains_keyword(text_norm: str, kw: str) -> bool:
-    """
-    For very short tokens (ai/ml/llm/gpt) do word-boundary match.
-    For multiword/normal tokens, do substring match on normalized text.
-    """
-    kw_norm = _normalize(kw)
-
-    # word-boundary for short ambiguous tokens
-    if kw_norm in {"ai", "ml", "llm", "gpt"}:
-        return re.search(rf"\b{re.escape(kw_norm)}\b", text_norm) is not None
-
-    return kw_norm in text_norm
-
-
-def extract_tech_mentions(text: str) -> Set[str]:
-    t = _normalize(text)
-    found: Set[str] = set()
-
-    all_keywords = CORE_AI_TECH | DATA_PLATFORM_TECH | CLOUD_AI_SERVICES | GENERAL_TECH
-    for kw in all_keywords:
-        if _contains_keyword(t, kw):
-            # store the keyword in a consistent normalized form
-            found.add(_normalize(kw))
-
-    return found
-
-
-def calculate_tech_adoption_score(mentions: Set[str], title: str) -> float:
-    """
-    Score 0..1 based on number and type of tech mentions.
-    Heavier weight for core AI tech; moderate for data platforms; some for cloud AI services.
-    """
-    if not mentions:
-        return 0.0
-
-    # normalize keyword sets once for consistent membership checks
-    core_set = {_normalize(x) for x in CORE_AI_TECH}
-    data_set = {_normalize(x) for x in DATA_PLATFORM_TECH}
-    cloud_set = {_normalize(x) for x in CLOUD_AI_SERVICES}
-    general_set = {_normalize(x) for x in GENERAL_TECH}
-
-    core_hits = sum(1 for m in mentions if m in core_set)
-    data_hits = sum(1 for m in mentions if m in data_set)
-    cloud_hits = sum(1 for m in mentions if m in cloud_set)
-    general_hits = sum(1 for m in mentions if m in general_set)
-
-    # weighted sum with caps (keep simple + stable)
-    score = (
-        min(core_hits, 3) * 0.25 +
-        min(data_hits, 3) * 0.12 +
-        min(cloud_hits, 2) * 0.13 +
-        min(general_hits, 3) * 0.05
-    )
-
-    # title boost (if signal explicitly sounds AI-related)
-    title_lower = _normalize(title)
-    title_boost = 0.15 if any(k in title_lower for k in ["ai", "ml", "machine learning", "llm", "genai"]) else 0.0
-
-    return min(score + title_boost, 1.0)
+    return (text or "").lower()
 
 
 def _signal_id(company_id: str, title: str, url: Optional[str]) -> str:
@@ -162,6 +66,144 @@ def _signal_id(company_id: str, title: str, url: Optional[str]) -> str:
     return sha256(raw.encode("utf-8")).hexdigest()
 
 
+def extract_tech_mentions(text: str) -> Set[str]:
+    t = _normalize(text)
+    found: Set[str] = set()
+
+    for kw in (CORE_AI_TECH | DATA_PLATFORM_TECH | CLOUD_AI_SERVICES | WEB_STACK_TECH):
+        if kw in t:
+            found.add(kw)
+
+    return found
+
+
+def calculate_tech_adoption_score(mentions: Set[str], title: str) -> float:
+    """
+    Score 0..1 based on number and type of tech mentions.
+    """
+    if not mentions:
+        return 0.0
+
+    core_hits = sum(1 for m in mentions if m in CORE_AI_TECH)
+    data_hits = sum(1 for m in mentions if m in DATA_PLATFORM_TECH)
+    cloud_hits = sum(1 for m in mentions if m in CLOUD_AI_SERVICES)
+    web_hits = sum(1 for m in mentions if m in WEB_STACK_TECH)
+
+    # weighted sum with caps (tunable)
+    score = (
+        min(core_hits, 3) * 0.22 +
+        min(data_hits, 3) * 0.12 +
+        min(cloud_hits, 2) * 0.14 +
+        min(web_hits, 4) * 0.08
+    )
+
+    title_lower = _normalize(title)
+    title_boost = 0.10 if any(k in title_lower for k in ["ai", "ml", "machine learning", "llm", "genai", "platform"]) else 0.0
+
+    return min(score + title_boost, 1.0)
+
+
+# -----------------------------
+# REAL COLLECTION: scrape company website tech
+# -----------------------------
+def _ensure_url(domain_or_url: str) -> str:
+    x = (domain_or_url or "").strip()
+    if not x:
+        return ""
+    if x.startswith("http://") or x.startswith("https://"):
+        return x
+    return f"https://{x}"
+
+
+def _fetch_html(url: str, timeout: int = 20) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; PE_OrgAIR/1.0; +https://example.com)"
+    }
+    r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+    r.raise_for_status()
+    return r.text or ""
+
+
+def _extract_visible_text(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Remove scripts/styles
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+    text = soup.get_text(" ", strip=True)
+    # compress whitespace
+    return re.sub(r"\s+", " ", text)
+
+
+def _extract_script_srcs(html: str) -> List[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    srcs = []
+    for s in soup.find_all("script"):
+        src = s.get("src")
+        if src:
+            srcs.append(str(src))
+    return srcs
+
+
+def scrape_tech_signal_inputs(
+    company: str,
+    company_domain_or_url: str,
+) -> List[TechSignalInput]:
+    """
+    REAL Digital Presence collector.
+    Looks at company homepage HTML and detects tech keywords from:
+      - visible text
+      - script src URLs (often reveal analytics/CDNs/frameworks)
+    """
+    url = _ensure_url(company_domain_or_url)
+    if not url:
+        return []
+
+    try:
+        html = _fetch_html(url)
+    except Exception as e:
+        # fail open: return empty list if site blocks/timeout
+        return [
+            TechSignalInput(
+                title="Digital presence scan failed",
+                description=f"Failed to fetch {url}: {e}",
+                company=company,
+                url=url,
+                observed_date=datetime.utcnow().strftime("%Y-%m-%d"),
+            )
+        ]
+
+    visible_text = _extract_visible_text(html)
+    script_srcs = " ".join(_extract_script_srcs(html))
+
+    # Combine sources
+    combined = f"{visible_text} {script_srcs}"
+
+    mentions = extract_tech_mentions(combined)
+
+    # If we detected nothing, still create one signal item as evidence of scan
+    desc = (
+        f"Scanned {url} for technology indicators. "
+        f"Detected {len(mentions)} technologies."
+    )
+    if mentions:
+        desc += f" Mentions: {', '.join(sorted(mentions))}."
+
+    return [
+        TechSignalInput(
+            title="Digital presence technology scan",
+            description=desc,
+            company=company,
+            url=url,
+            observed_date=datetime.utcnow().strftime("%Y-%m-%d"),
+        )
+    ]
+
+
+# -----------------------------
+# Convert + Aggregate
+# -----------------------------
 def tech_inputs_to_signals(company_id: str, items: List[TechSignalInput]) -> List[ExternalSignal]:
     signals: List[ExternalSignal] = []
     now = datetime.utcnow()
@@ -175,6 +217,7 @@ def tech_inputs_to_signals(company_id: str, items: List[TechSignalInput]) -> Lis
             "company": item.company,
             "mentions": sorted(list(mentions)),
             "observed_date": item.observed_date,
+            "url": item.url,
         }
 
         signals.append(
@@ -187,7 +230,7 @@ def tech_inputs_to_signals(company_id: str, items: List[TechSignalInput]) -> Lis
                 score=score_0_100,
                 title=item.title,
                 url=item.url,
-                metadata_json=json.dumps(meta),  # valid JSON for Snowflake PARSE_JSON later
+                metadata_json=json.dumps(meta),
             )
         )
 
@@ -195,41 +238,29 @@ def tech_inputs_to_signals(company_id: str, items: List[TechSignalInput]) -> Lis
 
 
 def aggregate_tech_signals(company_id: str, tech_signals: List[ExternalSignal]) -> CompanySignalSummary:
-    tech_score = int(round(mean(s.score for s in tech_signals))) if tech_signals else 0
+    if not tech_signals:
+        tech_score = 0
+    else:
+        tech_score = int(round(mean(s.score for s in tech_signals)))
 
-    # jobs & patents filled by other pipelines later
+    # other pipelines fill these later
     jobs_score = 0
     patents_score = 0
+    leadership_score = 0
 
-    composite_score = int(round(0.5 * jobs_score + 0.3 * tech_score + 0.2 * patents_score))
+    composite_score = int(round(
+        0.30 * jobs_score +
+        0.25 * patents_score +
+        0.25 * tech_score +
+        0.20 * leadership_score
+    ))
 
     return CompanySignalSummary(
         company_id=company_id,
         jobs_score=jobs_score,
         tech_score=tech_score,
         patents_score=patents_score,
+        leadership_score=leadership_score,
         composite_score=composite_score,
+        last_updated_at=datetime.utcnow(),
     )
-
-def scrape_tech_signal_inputs_mock(company: str) -> List[TechSignalInput]:
-    """
-    MOCK tech signal "scraper".
-    Returns a few TechSignalInput items as if they were scraped from blogs/GitHub/news.
-    """
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    return [
-        TechSignalInput(
-            title="AI Platform Launch",
-            description="We announced an LLM agent workflow with RAG using Azure OpenAI and Kubernetes.",
-            company=company,
-            url="https://example.com/ai-platform-launch",
-            observed_date=today,
-        ),
-        TechSignalInput(
-            title="Open source release",
-            description="We released an open source repo for evaluation pipelines, using LangChain + vector database patterns.",
-            company=company,
-            url="https://github.com/example/eval-pipelines",
-            observed_date=today,
-        ),
-    ]

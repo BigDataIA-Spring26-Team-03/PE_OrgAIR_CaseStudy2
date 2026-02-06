@@ -11,6 +11,7 @@ class SignalCategory(str, Enum):
     jobs = "jobs"
     tech = "tech"
     patents = "patents"
+    leadership = "leadership"
 
 
 class SignalSource(str, Enum):
@@ -44,7 +45,10 @@ class CompanySignalSummary(BaseModel):
     jobs_score: int = Field(..., ge=0, le=100)
     tech_score: int = Field(..., ge=0, le=100)
     patents_score: int = Field(..., ge=0, le=100)
+    leadership_score: int = Field(default=0, ge=0, le=100)
+
 
     composite_score: int = Field(..., ge=0, le=100)
 
     last_updated_at: Optional[datetime] = None
+    

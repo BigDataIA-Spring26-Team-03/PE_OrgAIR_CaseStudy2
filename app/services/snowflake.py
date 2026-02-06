@@ -233,7 +233,7 @@ class SnowflakeService:
             "technology_hiring_score": float(summary.jobs_score),
             "innovation_activity_score": float(summary.patents_score),
             "digital_presence_score": float(summary.tech_score),
-            "leadership_signals_score": None,
+            "leadership_signals_score": float(getattr(summary, "leadership_score", 0)),
             "composite_score": float(summary.composite_score),
             "signal_count": int(signal_count),
         }
@@ -270,6 +270,26 @@ class SnowflakeService:
         """
         results = self.execute_query(query, {"id": company_id})
         return results[0] if results else None
+
+    # ✅ NEW: domain lookup for digital presence scraping (with both fixes)
+    def get_primary_domain_by_company_id(self, company_id: str) -> Optional[str]:
+        """
+        Returns the primary website/domain for a company from company_domains.
+
+        Fixes:
+        1) Don't require is_primary=TRUE strictly (many rows may be NULL).
+        2) Deterministic fallback ordering: prefer primary, else most recently updated/created.
+        """
+        query = """
+            SELECT domain_url
+            FROM company_domains
+            WHERE company_id = %(company_id)s
+              AND (is_primary = TRUE OR is_primary IS NULL)
+            ORDER BY is_primary DESC, updated_at DESC, created_at DESC
+            LIMIT 1
+        """
+        rows = self.execute_query(query, {"company_id": company_id})
+        return rows[0]["domain_url"] if rows else None
 
     def list_companies(self, limit: int = 10, offset: int = 0) -> List[Dict]:
         query = """

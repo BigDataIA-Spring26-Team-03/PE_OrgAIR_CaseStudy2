@@ -1,16 +1,18 @@
 from __future__ import annotations
+
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from hashlib import sha256
 from statistics import mean
-from app.models.signal import CompanySignalSummary
 from typing import Dict, List, Optional, Set
-from jobspy import scrape_jobs
-import pandas as pd
 
-from app.models.signal import ExternalSignal, SignalCategory, SignalSource
+import pandas as pd
+from jobspy import scrape_jobs
+
+from app.models.signal import CompanySignalSummary, ExternalSignal, SignalCategory, SignalSource
 
 
 class SkillCategory(str, Enum):
@@ -44,7 +46,6 @@ AI_SKILLS: Dict[SkillCategory, Set[str]] = {
     },
 }
 
-
 SENIORITY_KEYWORDS = {
     "intern": ["intern", "internship", "co-op", "coop"],
     "junior": ["junior", "entry", "associate", "new grad", "graduate"],
@@ -60,11 +61,11 @@ class JobPosting:
     description: str
     company: str
     url: Optional[str] = None
-    posted_date: Optional[str] = None  # keep string for now (we can normalize later)
+    posted_date: Optional[str] = None
 
 
 def classify_seniority(title: str) -> str:
-    t = title.lower()
+    t = (title or "").lower()
     for level, kws in SENIORITY_KEYWORDS.items():
         if any(kw in t for kw in kws):
             return level
@@ -82,19 +83,28 @@ def extract_ai_skills(text: str) -> Set[str]:
 
 
 def calculate_ai_relevance_score(skills: Set[str], title: str) -> float:
-    # 0..1 score
     base_score = min(len(skills) / 5, 1.0) * 0.6
-
     title_lower = (title or "").lower()
     title_keywords = ["ai", "ml", "machine learning", "data scientist", "mlops", "artificial intelligence"]
     title_boost = 0.4 if any(kw in title_lower for kw in title_keywords) else 0.0
-
     return min(base_score + title_boost, 1.0)
 
 
 def _signal_id(company_id: str, category: SignalCategory, title: str, url: Optional[str]) -> str:
     raw = f"{company_id}|{category.value}|{title}|{url or ''}"
     return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _norm_company(s: str) -> str:
+    """
+    Normalize company strings for rough matching.
+    Example: 'Walmart Inc.' -> 'walmart'
+    """
+    x = (s or "").lower().strip()
+    x = re.sub(r"[^a-z0-9 ]+", " ", x)
+    x = re.sub(r"\b(inc|incorporated|corp|corporation|llc|ltd|limited|co|company|plc)\b", " ", x)
+    x = re.sub(r"\s+", " ", x).strip()
+    return x
 
 
 def job_postings_to_signals(company_id: str, jobs: List[JobPosting]) -> List[ExternalSignal]:
@@ -105,10 +115,8 @@ def job_postings_to_signals(company_id: str, jobs: List[JobPosting]) -> List[Ext
         skills = extract_ai_skills(job.description)
         seniority = classify_seniority(job.title)
         relevance_0_1 = calculate_ai_relevance_score(skills, job.title)
-
         score_0_100 = int(round(relevance_0_1 * 100))
 
-        # store useful context in metadata_json (simple stringified dict for now)
         meta = {
             "company": job.company,
             "seniority": seniority,
@@ -131,39 +139,36 @@ def job_postings_to_signals(company_id: str, jobs: List[JobPosting]) -> List[Ext
         )
 
     return signals
-    
-def aggregate_job_signals(
-    company_id: str,
-    job_signals: list[ExternalSignal],
-) -> CompanySignalSummary:
-    """
-    Aggregate job-based ExternalSignals into a company-level summary.
-    """
 
+
+def aggregate_job_signals(company_id: str, job_signals: list[ExternalSignal]) -> CompanySignalSummary:
     if not job_signals:
         jobs_score = 0
     else:
         jobs_score = int(round(mean(s.score for s in job_signals)))
 
-    # tech & patents will be filled by other pipelines later
+    # other pipelines fill these later in orchestrator summary builder
     tech_score = 0
     patents_score = 0
+    leadership_score = 0
 
-    composite_score = int(
-        round(
-            0.5 * jobs_score +
-            0.3 * tech_score +
-            0.2 * patents_score
-        )
-    )
+    composite_score = int(round(
+        0.30 * jobs_score +
+        0.25 * patents_score +
+        0.25 * tech_score +
+        0.20 * leadership_score
+    ))
 
     return CompanySignalSummary(
         company_id=company_id,
         jobs_score=jobs_score,
         tech_score=tech_score,
         patents_score=patents_score,
+        leadership_score=leadership_score,
         composite_score=composite_score,
+        last_updated_at=datetime.utcnow(),
     )
+
 
 def scrape_job_postings(
     search_query: str,
@@ -171,11 +176,13 @@ def scrape_job_postings(
     location: str = "United States",
     max_results_per_source: int = 25,
     hours_old: int = 24 * 30,
+    target_company_name: Optional[str] = None,
 ) -> list[JobPosting]:
     """
     Scrape job postings using JobSpy and return JobPosting objects.
-    """
 
+    If target_company_name is provided, results are filtered to that company.
+    """
     df = scrape_jobs(
         site_name=sources,
         search_term=search_query,
@@ -185,11 +192,28 @@ def scrape_job_postings(
         linkedin_fetch_description=True,
     )
 
-    jobs: list[JobPosting] = []
-
     if df is None or df.empty:
-        return jobs
+        return []
 
+    # --- Filter to the target company (company-specific hiring) ---
+    if target_company_name:
+        target_raw = target_company_name.strip().lower()
+        target_norm = _norm_company(target_company_name)
+
+        def is_match(company_val: object) -> bool:
+            c = str(company_val or "")
+            c_lower = c.lower()
+            # fast contains match (handles "Walmart", "Walmart Inc.", etc.)
+            if target_raw and target_raw in c_lower:
+                return True
+            # normalized match fallback
+            return target_norm != "" and _norm_company(c) == target_norm
+
+        df = df[df["company"].apply(is_match)]
+        if df.empty:
+            return []
+
+    jobs: list[JobPosting] = []
     for _, row in df.iterrows():
         jobs.append(
             JobPosting(
